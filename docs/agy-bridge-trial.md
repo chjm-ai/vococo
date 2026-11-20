@@ -6,7 +6,9 @@
 
 ## 在 vococo 使用
 
-已取消试用截止日；只要本机配置了网页口令、`agy` 可执行，且没有全局钩子、插件或 MCP 等自定义配置即可使用。新建普通 Web 会话，在模型面板的「Antigravity」组中选模型；目录来自官方 `agy models`，不会改变别的会话或全局默认模型。
+已取消试用截止日；只要本机配置了网页口令、`agy` 可执行，且没有全局钩子、插件或 MCP 等自定义配置即可使用。新建普通 Web 会话，在模型面板的「Antigravity」组中选模型；目录来自官方 ACP `configOptions`，不会改变别的会话或全局默认模型。
+
+模型按「族」展示（Gemini 4 Neon / Argon / Hydrogen、Orchestrator、Claude Opus/Sonnet 5.5），思考深度不再拆成 High/Medium/Low 行，改用输入框左侧的「思考档位」；GPT 相关模型隐藏。旧会话里的 Gemini 3.8 / Claude 4.6 / GPT 选择会自动迁移到当前第一族，并保留原来的档位。上游升级灰度期间新旧模型列表会随机返回，vococo 会重试并保留最近一次新清单。Antigravity CLI 入口暂时从模型面板隐藏，额度环挂在「Antigravity」分组标题右侧。
 
 网页会话通过官方 `agy acp --stdio` 运行，并在独立的交接工作区里按轮刷新：
 

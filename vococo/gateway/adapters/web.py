@@ -1249,9 +1249,32 @@ class WebAdapter:
             await check_open()
             key = config.resolve_session_key("web", conv)
             selected = session_store.get_chosen_model(key)
-            trial_model = selected if agy_trial.is_trial_model(selected) else ""
             expected = body.get("agy_trial_model", "")
             command = is_command(str(body.get("text") or "").strip())
+            native_involved = (agy_trial.is_native_model(selected)
+                               or (isinstance(expected, str) and agy_trial.is_native_model(expected)))
+            if native_involved:
+                spec = await agy_trial.native_spec()
+                for value_name in ("selected", "expected"):
+                    value = selected if value_name == "selected" else expected
+                    if not isinstance(value, str) or not agy_trial.is_native_model(value):
+                        continue
+                    hit = agy_trial.resolve_native_choice(spec, value)
+                    if not hit:
+                        return web.json_response(
+                            {"error": "Antigravity 模型列表已更新，请重新选择模型"}, status=409)
+                    norm_id, norm_meta, suffix = hit
+                    if value_name == "selected":
+                        if norm_id != selected:
+                            if suffix and suffix in norm_meta["efforts"]:
+                                session_store.set_model_preferences(key, norm_id, {"effort": suffix})
+                            session_store.set_chosen_model(key, norm_id)
+                            selected = norm_id
+                    else:
+                        if suffix and suffix in norm_meta["efforts"]:
+                            session_store.set_model_preferences(key, norm_id, {"effort": suffix})
+                        expected = norm_id
+            trial_model = selected if agy_trial.is_trial_model(selected) else ""
             if not command and session_store.agy_native_session(key) and not agy_trial.is_native_model(selected):
                 return web.json_response({"error": "会话已锁定 Antigravity，请选 Antigravity 模型"}, status=409)
             manual_only = (agy_trial.is_native_model(trial_model)
@@ -1469,9 +1492,15 @@ class WebAdapter:
         trial = agy_trial.is_trial_model(model)
         native = agy_trial.is_native_model(model)
         if native:
-            if not (self._agy_native_available(session_key)
-                    and model in await agy_trial.native_catalog()):
+            spec = await agy_trial.native_spec()
+            hit = agy_trial.resolve_native_choice(spec, model)
+            if not (self._agy_native_available(session_key) and hit):
                 return web.json_response({"error": "该 Antigravity 模型或会话不可用"}, status=400)
+            norm_id, _meta, suffix = hit
+            if norm_id != model:
+                model = norm_id
+                if suffix:
+                    session_store.set_model_preferences(session_key, model, {"effort": suffix})
             if self.session_closing(session_key):
                 return web.json_response({"error": "会话正在删除或已删除"}, status=409)
         elif trial and (model not in agy_trial.CHOICES or not agy_trial.enabled()
@@ -2284,7 +2313,8 @@ class WebAdapter:
         conv = request.query.get("conv", "")
         key = config.resolve_session_key("web", conv) if conv else ""
         handoff = self._agy_handoff_available(key)
-        native_choices = await agy_trial.native_catalog() if self._agy_native_available(key) else {}
+        spec = await agy_trial.native_spec() if self._agy_native_available(key) else {"models": {}}
+        native_choices = {mid: meta["label"] for mid, meta in spec["models"].items()}
         native_locked = bool(key and session_store.agy_native_session(key))
         if native_locked:
             choices = []
@@ -2293,10 +2323,29 @@ class WebAdapter:
         if key and not chosen:
             chosen = active_model
             session_store.set_chosen_model(key, chosen)
+        if (key and agy_trial.is_native_model(chosen) and spec["models"]
+                and not agy_trial.native_pending(key)):
+            # 旧版把 High/Medium/Low 存成了独立模型；升级后映射回模型族，保留原档位。
+            hit = agy_trial.resolve_native_choice(spec, chosen)
+            if hit:
+                norm_id, norm_meta, suffix = hit
+            else:
+                norm_id = chosen
+            if hit and norm_id != chosen:
+                if suffix and suffix in norm_meta["efforts"]:
+                    session_store.set_model_preferences(key, norm_id, {"effort": suffix})
+                session_store.set_chosen_model(key, norm_id)
+                chosen = norm_id
         efforts, tiers = {}, {}
         for model, _, group in choices:
             if group == "agy-native":
-                continue  # 思考档位以原生模型 ID 为准
+                entry = spec["models"].get(model) or {}
+                levels = entry.get("efforts") or []
+                options = model_preferences.for_model(key, model)
+                value = options["effort"] if options["effort"] in levels else entry.get("default_effort", "")
+                efforts[model] = {"levels": agy_trial.effort_choices(entry) if entry else [],
+                                  "value": value}
+                continue
             options = model_preferences.for_model(key, model)
             levels = providers.effort_levels_for_model(model)
             value = options["effort"]
@@ -2330,10 +2379,18 @@ class WebAdapter:
             # 兼容更新前缓存住的 Web 页面：旧客户端没传 model 时按当前默认模型落库。
             model = settings_store.get_web_default_model() \
                 or config.MODEL
-        available = {item[0] for item in providers.available_models(MODEL_CHOICES)}
-        if model not in available:
-            return web.json_response({"error": "模型不可用"}, status=400)
-        levels = providers.effort_levels_for_model(model)
+        if agy_trial.is_native_model(model):
+            spec = await agy_trial.native_spec()
+            hit = agy_trial.find_native_model(spec, model)
+            if not hit:
+                return web.json_response({"error": "模型不可用"}, status=400)
+            model, entry, _suffix = hit
+            levels = entry["efforts"]
+        else:
+            available = {item[0] for item in providers.available_models(MODEL_CHOICES)}
+            if model not in available:
+                return web.json_response({"error": "模型不可用"}, status=400)
+            levels = providers.effort_levels_for_model(model)
         if effort not in levels:
             return web.json_response(
                 {"error": f"{model} 仅支持 {'/'.join(levels)}"}, status=400
@@ -2469,7 +2526,7 @@ class WebAdapter:
         Antigravity 试用仅供 Web 使用，不进入常规模型供应商。
         """
         model = request.query.get("model")
-        if model == "agy-handoff" or agy_trial.is_trial_model(model):
+        if model in ("agy-handoff", "agy-native") or agy_trial.is_trial_model(model):
             payload, status = await agy_trial.quota_usage(model)
         else:
             payload, status = await providers.usage_for_model(model)

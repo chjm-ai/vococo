@@ -248,6 +248,115 @@ async def test_denied_write_tool_does_not_abort_turn(tmp_path, monkeypatch):
     assert replies == [{'outcome': 'selected', 'optionId': 'r'}]
 
 
+@pytest.mark.anyio
+async def test_model_and_effort_use_config_options(tmp_path, monkeypatch):
+    sid = '3596d05e-5d0e-47a7-b5a8-77aee32011d2'
+    workspace = tmp_path / 'workspace'
+    (workspace / '.agents').mkdir(parents=True)
+    (workspace / '.agents/mcp_config.json').write_text(json.dumps({'mcpServers': {
+        'vococo-context-test': {'command': '/bin/echo', 'args': ['serve']}}}))
+    config = [
+        {'id': 'model', 'type': 'select', 'currentValue': 'gemini-4-neon',
+         'options': [{'value': 'gemini-4-neon', 'name': 'Gemini 4 Neon'},
+                     {'value': 'gemini-4-argon', 'name': 'Gemini 4 Argon'}]},
+        {'id': 'thought_level', 'type': 'select', 'currentValue': 'high',
+         'options': [{'value': x, 'name': x} for x in ('low', 'medium', 'high', 'xhigh')]},
+    ]
+    proc = Proc([
+        {'jsonrpc': '2.0', 'id': 1, 'result': {}},
+        {'jsonrpc': '2.0', 'id': 2, 'result': {'sessionId': sid, 'configOptions': config}},
+        {'jsonrpc': '2.0', 'id': 3, 'result': {'configOptions': config}},
+        {'jsonrpc': '2.0', 'id': 4, 'result': {'configOptions': config}},
+        update('好的'),
+        {'jsonrpc': '2.0', 'id': 5, 'result': {'stopReason': 'end_turn'}},
+    ])
+
+    async def spawn(*args, **kwargs):
+        return proc
+
+    async def terminate(_proc):
+        return None
+
+    monkeypatch.setattr(agy_acp.agy_trial, 'spawn_cli', spawn)
+    monkeypatch.setattr(agy_acp.agy_trial, 'terminate', terminate)
+    monkeypatch.setattr(agy_acp.agy_trial, 'cli_binary', lambda: Path('/bin/true'))
+    events = await collect(agy_acp.stream_turn(workspace, 10, 'gemini-4-neon', '你好', effort='xhigh'))
+    assert ('delta', '好的') in events
+    sent = requests(proc)
+    by_method = [item for item in sent if item.get('method') == 'session/set_config_option']
+    assert [item['params']['configId'] for item in by_method] == ['model', 'thought_level']
+    assert [item['params']['value'] for item in by_method] == ['gemini-4-neon', 'xhigh']
+    assert not any(item.get('method') == 'session/set_model' for item in sent)
+
+
+@pytest.mark.anyio
+async def test_variant_only_model_options_pick_matching_effort(tmp_path, monkeypatch):
+    sid = '3596d05e-5d0e-47a7-b5a8-77aee32011d2'
+    workspace = tmp_path / 'workspace'
+    (workspace / '.agents').mkdir(parents=True)
+    (workspace / '.agents/mcp_config.json').write_text(json.dumps({'mcpServers': {
+        'vococo-context-test': {'command': '/bin/echo', 'args': ['serve']}}}))
+    config = [
+        {'id': 'model', 'type': 'select', 'currentValue': 'gemini-4-neon-high',
+         'options': [{'value': 'gemini-4-neon-high', 'name': 'Gemini 4 Neon (High)'},
+                     {'value': 'gemini-4-neon-low', 'name': 'Gemini 4 Neon (Low)'}]},
+        {'id': 'thought_level', 'type': 'select', 'currentValue': 'high',
+         'options': [{'value': 'low', 'name': 'Low'}, {'value': 'high', 'name': 'High'}]},
+    ]
+    proc = Proc([
+        {'jsonrpc': '2.0', 'id': 1, 'result': {}},
+        {'jsonrpc': '2.0', 'id': 2, 'result': {'sessionId': sid, 'configOptions': config}},
+        {'jsonrpc': '2.0', 'id': 3, 'result': {'configOptions': config}},
+        {'jsonrpc': '2.0', 'id': 4, 'result': {'configOptions': config}},
+        {'jsonrpc': '2.0', 'id': 5, 'result': {'stopReason': 'end_turn'}},
+    ])
+
+    async def spawn(*args, **kwargs):
+        return proc
+
+    async def terminate(_proc):
+        return None
+
+    monkeypatch.setattr(agy_acp.agy_trial, 'spawn_cli', spawn)
+    monkeypatch.setattr(agy_acp.agy_trial, 'terminate', terminate)
+    monkeypatch.setattr(agy_acp.agy_trial, 'cli_binary', lambda: Path('/bin/true'))
+    await collect(agy_acp.stream_turn(workspace, 10, 'gemini-4-neon', '你好', effort='low'))
+    sent = requests(proc)
+    values = [item['params']['value'] for item in sent
+              if item.get('method') == 'session/set_config_option']
+    assert values[:2] == ['gemini-4-neon-low', 'low']
+
+
+@pytest.mark.anyio
+async def test_unavailable_family_raises_model_unavailable(tmp_path, monkeypatch):
+    sid = '3596d05e-5d0e-47a7-b5a8-77aee32011d2'
+    workspace = tmp_path / 'workspace'
+    (workspace / '.agents').mkdir(parents=True)
+    (workspace / '.agents/mcp_config.json').write_text(json.dumps({'mcpServers': {
+        'vococo-context-test': {'command': '/bin/echo', 'args': ['serve']}}}))
+    config = [{'id': 'model', 'type': 'select', 'currentValue': 'gemini-4-argon',
+               'options': [{'value': 'gemini-4-argon', 'name': 'Gemini 4 Argon'}]},
+              {'id': 'thought_level', 'type': 'select', 'currentValue': 'high',
+               'options': [{'value': 'high', 'name': 'High'}]}]
+    proc = Proc([
+        {'jsonrpc': '2.0', 'id': 1, 'result': {}},
+        {'jsonrpc': '2.0', 'id': 2, 'result': {'sessionId': sid, 'configOptions': config}},
+    ])
+
+    async def spawn(*args, **kwargs):
+        return proc
+
+    async def terminate(_proc):
+        return None
+
+    monkeypatch.setattr(agy_acp.agy_trial, 'spawn_cli', spawn)
+    monkeypatch.setattr(agy_acp.agy_trial, 'terminate', terminate)
+    monkeypatch.setattr(agy_acp.agy_trial, 'cli_binary', lambda: Path('/bin/true'))
+    with pytest.raises(agy_acp.AcpError, match='agy_model_unavailable'):
+        await collect(agy_acp.stream_turn(workspace, 10, 'gemini-4-neon', '你好', effort='high'))
+    assert not any(item.get('method') == 'session/prompt' for item in requests(proc))
+
+
 def test_mcp_servers_requires_explicit_stdio_command(tmp_path):
     path = tmp_path / 'mcp.json'
     path.write_text(json.dumps({'mcpServers': {'x': {'command': '/bin/echo', 'args': ['a']}}}))

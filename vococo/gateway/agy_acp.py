@@ -143,6 +143,52 @@ async def _result(events):
     return result
 
 
+async def _apply_model(client, session_id, result, model, effort):
+    """用官方 configOptions 切模型族和思考档位；没有 configOptions 的旧版退回 set_model。"""
+    configs = {item.get('id'): item for item in (result or {}).get('configOptions') or []
+               if isinstance(item, dict)}
+    model_cfg = configs.get('model') or {}
+    model_values = [opt.get('value') for opt in model_cfg.get('options') or []
+                    if isinstance(opt, dict)]
+    if model_values:
+        if model not in model_values:
+            # 极端灰度下 configOptions 可能只列带档位后缀的变体；按族+档位挑一个可用值。
+            candidates = [value for value in model_values if value.startswith(model + '-')]
+            preferred = f"{model}-{effort}" if effort else ""
+            if preferred in candidates:
+                model = preferred
+            elif candidates:
+                model = candidates[0]
+            else:
+                raise AcpError('agy_model_unavailable')
+        try:
+            await _result(client.request('session/set_config_option', {
+                'sessionId': session_id, 'configId': 'model', 'value': model}))
+        except AcpError:
+            raise AcpError('agy_model_unavailable') from None
+    else:
+        try:
+            await _result(client.request('session/set_model', {
+                'sessionId': session_id, 'modelId': model}))
+        except AcpError:
+            raise AcpError('agy_model_unavailable') from None
+    if not effort:
+        return
+    thought_cfg = configs.get('thought_level') or {}
+    levels = [opt.get('value') for opt in thought_cfg.get('options') or []
+              if isinstance(opt, dict)]
+    if not levels:
+        return
+    if effort not in levels:
+        # 旧灰度只有 low/medium/high；用户存了 xhigh 时按最高可用档继续。
+        effort = 'high' if 'high' in levels else levels[-1]
+    try:
+        await _result(client.request('session/set_config_option', {
+            'sessionId': session_id, 'configId': 'thought_level', 'value': effort}))
+    except AcpError:
+        raise AcpError('agy_effort_unavailable') from None
+
+
 def _tool_names(server_name, tools):
     # ACP 里 MCP 工具名通常是 mcp_<server>_<tool>；服务名带连字符时也兼容下划线写法。
     names = {f"mcp_{server_name}_{tool}" for tool in tools}
@@ -150,9 +196,11 @@ def _tool_names(server_name, tools):
     return names
 
 
-async def stream_turn(workspace, timeout, model, prompt, *, session_id=None,
+async def stream_turn(workspace, timeout, model, prompt, *, effort=None, session_id=None,
                       extra_servers=(), allowed_tools=(), approve=None):
-    """运行一轮 ACP 会话；产出 ('delta', 文本)、('session', id)、('done', None)。"""
+    """运行一轮 ACP 会话；产出 ('delta', 文本)、('session', id)、('done', None)。
+
+    model 是模型族（如 gemini-4-neon），effort 是 low/medium/high/xhigh。"""
     from pathlib import Path
 
     workspace = Path(workspace)
@@ -182,8 +230,7 @@ async def stream_turn(workspace, timeout, model, prompt, *, session_id=None,
                 session_id = (result or {}).get('sessionId')
                 if not _valid_id(session_id):
                     raise AcpError('agy_session_mismatch')
-            await _result(client.request('session/set_model', {
-                'sessionId': session_id, 'modelId': model}))
+            await _apply_model(client, session_id, result, model, effort)
             yield 'session', session_id
             stop = None
             async for kind, payload in client.request('session/prompt', {
