@@ -112,7 +112,7 @@ async def test_web_native_locks_only_after_success(isolated, monkeypatch):
         assert session_store.agy_native_session(conv) is None
         await send("test search", HIGH)
         assert session_store.agy_native_session(conv) is None
-        assert "Antigravity 网页只支持纯文本" in str(session_store.load_recent(conv))
+        assert "Antigravity 的工具调用被拒绝" in str(session_store.load_recent(conv))
         assert "用户消息：" not in str(session_store.load_recent(conv))
         assert (await choose("deepseek-flash")).status == 200
         assert (await choose(HIGH)).status == 200

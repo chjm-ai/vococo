@@ -35,14 +35,9 @@ SETTINGS = json.dumps({
         "read_file", "write_file", "read_url", "execute_url", "command", "mcp",
     )]},
 })
-# ACP 会话保留只读交接 MCP；文件、命令和联网仍然直接拒绝。
-SETTINGS_ACP = json.dumps({
-    "allowNonWorkspaceAccess": False,
-    "toolPermission": "strict",
-    "permissions": {"deny": [f"{action}(*)" for action in (
-        "read_file", "write_file", "edit_file", "read_url", "execute_url", "command", "search_web",
-    )]},
-})
+# 网页 ACP 会话：文件、命令、联网全部放开（主人明确要求）；vococo 写任务仍走网页确认，
+# 靠 permissions.ask 在 always-proceed 之上把三个写工具拦回来。
+# 说明见 SETTINGS_ACP（定义在 VOCOCO_MCP_WRITE 之后，依赖工具名）。
 
 
 class UpstreamError(Exception):
@@ -318,16 +313,23 @@ VOCOCO_MCP_TOKEN_FILE = Path.home() / ".local/share/vococo-mcp/static-token.txt"
 VOCOCO_MCP_READ = ("vococo_list_agents", "vococo_list_sessions", "vococo_search_history",
                    "vococo_read_session", "vococo_get_task")
 VOCOCO_MCP_WRITE = ("vococo_create_task", "vococo_continue_task", "vococo_cancel_task")
+# 网页 Antigravity：完全放开文件读写、命令、联网和 MCP；
+# always-proceed 会自动放行，只有 permissions.ask 里的 vococo 写工具仍弹网页确认。
+SETTINGS_ACP = json.dumps({
+    "allowNonWorkspaceAccess": True,
+    "toolPermission": "always-proceed",
+    "permissions": {"ask": [f"mcp(vococo-local/{tool})" for tool in VOCOCO_MCP_WRITE]},
+})
 _vococo_mcp_cache: tuple[float, dict | None] = (0.0, None)
 _ACP_NOTE = (
-    "本会话由 vococo 网页代理，可用只读 MCP 读取交接上下文、记忆索引和 Skill；"
+    "本会话由 vococo 网页代理，运行在本机；可以读写文件、执行命令、联网和调用 MCP，"
+    "权限与当前系统用户一致。修改文件或执行不可逆操作前，先用文字说明你要做什么。"
+    "可用只读 MCP 读取交接上下文、记忆索引和 Skill；"
     "如挂载了 `vococo-local` MCP，可查历史会话和任务；用户问过去聊过什么时，"
     "用 `vococo_search_history`/`vococo_read_session` 查，不要凭空回忆；"
     "派发、续接、取消任务会先请主人在网页确认，被拒绝就如实说明。"
-    "不能直接读写文件、不能联网、不能执行命令。"
     "Skill 每轮可能更新：本轮要遵循任何 Skill 时，必须重新调用 read_skill 取最新正文，"
     "不要沿用历史对话里的技能内容。"
-    "如果用户的任务必须联网或使用这些工具，请直接用文字说明当前模式无法完成，不要尝试调用。"
     "\n\n用户消息：\n"
 )
 _EFFORT_ORDER = ("low", "medium", "high", "xhigh")
@@ -633,7 +635,7 @@ _ERRORS = {
     "agy_timeout": "Antigravity 会话超时，请重试。",
     "agy_unavailable": "Antigravity CLI 不可用。",
     "agy_request_failed": "Antigravity 未完成请求，请在官方 CLI 检查登录、额度或网络。",
-    "agy_unexpected_tool": "Antigravity 网页只支持纯文本和只读上下文工具。本轮尝试调用其他工具，已停止。",
+    "agy_unexpected_tool": "Antigravity 的工具调用被拒绝，本轮已停止。",
     "agy_session_mismatch": "无法恢复上次的 Antigravity 会话，请新开一条会话。",
     "agy_mcp_config_invalid": "Antigravity 交接配置不可用，请重新选择模型后再试。",
     "agy_unknown_native_model": "Antigravity 暂未提供这个模型，请刷新模型列表。",
@@ -848,7 +850,9 @@ async def stream_native(key: str, turn_id: int, model: str, prompt: str, refusal
                 nonlocal denied_note
                 short = bundle["write"].get(name) if bundle else None
                 if short is None:
-                    return "abort"
+                    # 文件、命令、联网等原生工具已由 SETTINGS_ACP 放开；
+                    # 万一上游仍发来审批请求，也按放行处理。
+                    return "allow"
                 if short in denied_tools:
                     return "deny"
                 decision, note = await _approve_vococo_tool(short, call)
