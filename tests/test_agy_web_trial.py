@@ -68,7 +68,7 @@ async def test_trial_requires_auth_opt_in_and_does_not_change_default(trial_web,
         assert (await client.post("/model", json={"model": MEDIUM})).status == 401
         client.session.headers.update(HEADERS)
         data = await (await client.get("/models")).json()
-        assert {mid for mid, _, group in data["choices"] if group == "agy"} == set(agy_trial.CHOICES)
+        assert not any(group == "agy" for _, _, group in data["choices"])
         await select_model(client, MEDIUM)
         key = config.resolve_session_key("web", "main")
         assert settings_store.get_web_default_model() == "deepseek-flash"
@@ -176,6 +176,11 @@ async def test_trial_quota_uses_authenticated_official_groups(trial_web, monkeyp
         assert all(reply.status == 200 for reply in replies)
         data = await replies[0].json()
         assert calls == 1
+        monkeypatch.setattr(agy_trial, 'enabled', lambda: False)
+        monkeypatch.setattr(agy_trial, '_quota_cli_ready', lambda: True)
+        cli_quota = await client.get(url, params={'model': 'agy-handoff'})
+        assert cli_quota.status == 200 and await cli_quota.json() == data
+        monkeypatch.setattr(agy_trial, 'enabled', lambda: True)
         assert data["primary_limit"]["remaining_fraction"] == 0
         assert data["primary_limit"]["resets_at"] is None
         assert [len(group["limits"]) for group in data["groups"]] == [2, 1]

@@ -255,7 +255,10 @@ async def _refresh_quota():
 
 async def quota_usage(model):
     global _quota_refresh
-    if model not in CHOICES or not enabled():
+    if model == "agy-handoff":
+        if not _quota_cli_ready():
+            return {"error": "Antigravity CLI 额度暂不可查"}, 503
+    elif model not in CHOICES or not enabled():
         return {"error": "Antigravity 试用未启用或已结束"}, 404
     if _quota_cache is not None and _quota_cache[0] > monotonic():
         return _quota_cache[1:]
@@ -293,15 +296,19 @@ def cli_config_is_clean() -> bool:
         return False
 
 
-def enabled() -> bool:
+def _quota_cli_ready() -> bool:
     from .. import config
 
+    return bool(not _closing and config.WEB_AUTH_TOKEN and os.access(cli_binary(), os.X_OK)
+                and cli_config_is_clean())
+
+
+def enabled() -> bool:
     try:
         until = date.fromisoformat(os.environ.get("VOCOCO_AGY_TRIAL_UNTIL", ""))
     except ValueError:
         return False
-    return bool(not _closing and config.WEB_AUTH_TOKEN and date.today() < until
-                and os.access(cli_binary(), os.X_OK) and cli_config_is_clean())
+    return date.today() < until and _quota_cli_ready()
 
 
 def accepts_session(session_key: str) -> bool:
