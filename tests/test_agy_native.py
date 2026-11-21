@@ -38,6 +38,7 @@ async def test_web_native_locks_only_after_success(isolated, monkeypatch):
     monkeypatch.setattr(agy_trial, "enabled", lambda: True)
     settings_store.set_web_default_model("deepseek-flash")
     called = []
+    first_attempt_starts = []
     brain = isolated / "brain"
     brain.mkdir(exist_ok=True)
     monkeypatch.setattr(config, "AI_BRAIN_DIR", brain)
@@ -62,6 +63,7 @@ async def test_web_native_locks_only_after_success(isolated, monkeypatch):
 
     async def stream_turn(cwd, timeout, model, prompt, *, effort=None, session_id=None, **kwargs):
         called.append((str(cwd), model, effort, session_id))
+        assert (timeout, kwargs["max_timeout"], kwargs["progress_window"]) == (360, 720, 90)
         assert prompt.startswith("本会话由 vococo 网页代理")
         assert "不发送的规则" not in prompt
         if prompt.endswith("skip unsafe style"):
@@ -73,7 +75,14 @@ async def test_web_native_locks_only_after_success(isolated, monkeypatch):
         else:
             assert "测试规则：只说结论。" in prompt
         if prompt.endswith("first failure"):
-            raise agy_acp.AcpError("agy_request_failed")
+            first_attempt_starts.append(kwargs["started_at"])
+            if len(first_attempt_starts) == 1:
+                raise agy_acp.AcpError("agy_model_unavailable")
+            yield "tool", {"phase": "start", "id": "tool-1", "name": "read_file", "input": {"Path": "/tmp/a"}}
+            yield "tool", {"phase": "end", "id": "tool-1", "name": "read_file",
+                           "status": "completed", "output": "已有工具结果"}
+            yield "delta", "已有部分正文。"
+            raise agy_acp.AcpError("agy_timeout")
         if prompt.endswith("test search"):
             raise agy_acp.AcpError("agy_unexpected_tool")
         yield "session", NATIVE_ID
@@ -124,6 +133,13 @@ async def test_web_native_locks_only_after_success(isolated, monkeypatch):
         assert (await client.post('/send', json={**body, 'text': '/help', 'library_refs': ['test']})).status == 400
         await send("first failure", HIGH)
         assert session_store.agy_native_session(conv) is None
+        assert len(first_attempt_starts) == 2 and first_attempt_starts[0] == first_attempt_starts[1]
+        timed_out = session_store.load_history(conv, full_events=True)[-1]
+        assert "已有部分正文" in timed_out["assistant"] and "工具结果已保留" in timed_out["assistant"]
+        assert timed_out["events"][0]["preview"] == "已有工具结果"
+        assert "工具结果已保留" in timed_out["events"][-1]["text"]
+        frames = [json.loads(data) for _, data in adapter._buffer]
+        assert any(frame["type"] == "text" and "工具结果已保留" in str(frame) for frame in frames)
         await send("test search", HIGH)
         assert session_store.agy_native_session(conv) is None
         assert "Antigravity 的工具调用被拒绝" in str(session_store.load_recent(conv))
@@ -145,7 +161,7 @@ async def test_web_native_locks_only_after_success(isolated, monkeypatch):
             rules.write_text(f"# 回复偏好\n\n测试规则：{unsafe}", encoding="utf-8")
             await send("skip unsafe style", LOW)
             assert "测试通过" in str(session_store.load_recent(conv)[-1])
-        assert len(called) == 6
+        assert len(called) == 7
         locked = await (await client.get("/models", params={"conv": conv})).json()
         assert locked["agy_native_locked"] and not locked["agy_handoff"]
         assert {x[0] for x in locked["choices"]} == {HIGH, LOW}

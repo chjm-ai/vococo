@@ -176,7 +176,7 @@ def requests(proc):
 
 
 @pytest.mark.anyio
-async def test_stream_turn_creates_session_and_streams_reply(tmp_path, monkeypatch):
+async def test_stream_turn_creates_session_and_streams_reply(tmp_path, monkeypatch, capsys):
     sid = '3596d05e-5d0e-47a7-b5a8-77aee32011d2'
     workspace = tmp_path / 'workspace'
     (workspace / '.agents').mkdir(parents=True)
@@ -207,8 +207,12 @@ async def test_stream_turn_creates_session_and_streams_reply(tmp_path, monkeypat
     monkeypatch.setattr(agy_acp.agy_trial, 'spawn_cli', spawn)
     monkeypatch.setattr(agy_acp.agy_trial, 'terminate', terminate)
     monkeypatch.setattr(agy_acp.agy_trial, 'cli_binary', lambda: Path('/bin/true'))
-    events = await collect(agy_acp.stream_turn(workspace, 10, 'gemini-x', '你好'))
+    events = await collect(agy_acp.stream_turn(workspace, 10, 'gemini-x', '你好', turn_id=42))
     assert ('session', sid) in events and ('delta', '新回复') in events and ('done', None) in events
+    log = capsys.readouterr().out
+    assert 'turn_id=42 outcome=ok stage=session/prompt' in log and 'finish_received=True' in log
+    assert "'session/new':" in log and 'first_text_s=' in log
+    assert '你好' not in log and '新回复' not in log and 'echo hi' not in log
     assert any(kind == 'tool' and payload['phase'] == 'start' for kind, payload in events)
     assert ('thinking', '先看目录') in events
     argv = calls[0][0]
@@ -436,6 +440,120 @@ async def test_unavailable_family_raises_model_unavailable(tmp_path, monkeypatch
     with pytest.raises(agy_acp.AcpError, match='agy_model_unavailable'):
         await collect(agy_acp.stream_turn(workspace, 10, 'gemini-4-neon', '你好', effort='high'))
     assert not any(item.get('method') == 'session/prompt' for item in requests(proc))
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize('levels, expected', [(['low'], ['new', 'low']), ([], ['new']), (None, ['new'])])
+async def test_model_switch_uses_only_fresh_effort_options(levels, expected):
+    config = {'configOptions': [
+        {'id': 'model', 'currentValue': 'old', 'options': [{'value': 'old'}, {'value': 'new'}]},
+        {'id': 'thought_level', 'options': [{'value': 'xhigh'}]},
+    ]}
+    fresh = {} if levels is None else {'configOptions': [
+        {'id': 'thought_level', 'options': [{'value': level} for level in levels]},
+    ]}
+    messages = [{'jsonrpc': '2.0', 'id': 1, 'result': fresh}]
+    if levels:
+        messages.append({'jsonrpc': '2.0', 'id': 2, 'result': {}})
+    proc = Proc(messages)
+    await agy_acp._apply_model(agy_acp._Client(proc, set()), 's', config, 'new', 'xhigh')
+    assert [item['params']['value'] for item in requests(proc)] == expected
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize('last, error', [
+    ({'id': '1', 'result': {'stopReason': 'end_turn'}}, 'agy_response_mismatch'),
+    ({'id': 2, 'result': {'stopReason': 'end_turn'}}, 'agy_response_mismatch'),
+    ({'id': 1, 'result': {}}, 'agy_finish_invalid'),
+    ({'id': 1, 'result': {'stopReason': 'error'}}, 'agy_finish_invalid'),
+    ({'id': 1, 'result': {'stopReason': 'max_tokens'}}, 'agy_finish_limit'),
+    (None, 'agy_finish_invalid'),
+])
+async def test_prompt_end_errors_keep_partial_text(last, error):
+    proc = Proc([update('部分正文'), *([{'jsonrpc': '2.0', **last}] if last else [])])
+    client = agy_acp._Client(proc, set())
+    events = []
+    async with asyncio.timeout(10) as deadline:
+        with pytest.raises(agy_acp.AcpError, match=error):
+            async for event in agy_acp._stream_prompt(client, 's', '合成验证', deadline, deadline.when(), 0):
+                events.append(event)
+    assert events == [('delta', '部分正文')]
+    assert client.trace.finish_received is (last is not None and last['id'] == 1)
+
+
+@pytest.mark.anyio
+async def test_new_attempt_does_not_reset_elapsed_time(tmp_path):
+    started_at = asyncio.get_running_loop().time() - 361
+    # 预算已经用完，不检查不存在的配置，也不再启动 CLI。
+    with pytest.raises(agy_acp.AcpError, match='agy_timeout'):
+        await collect(agy_acp.stream_turn(tmp_path, 360, 'new', '合成验证',
+                                          started_at=started_at, max_timeout=720, progress_window=90))
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize('when', ['before', 'after', 'unchanged'])
+async def test_legacy_model_effort_uses_current_options(when):
+    options = [{'id': 'thought_level', 'options': [{'value': 'low'}]}]
+    result = {'models': {'currentModelId': 'new'}}
+    ack = {'jsonrpc': '2.0', 'id': 1, 'result': {}}
+    notice = {'jsonrpc': '2.0', 'method': 'session/update', 'params': {'sessionId': 's', 'update': {
+        'sessionUpdate': 'config_option_update', 'configOptions': options,
+    }}}
+    if when == 'unchanged':
+        result['configOptions'] = options
+        messages = [ack]
+    else:
+        messages = [notice, ack] if when == 'before' else [ack, notice]
+    messages.append({'jsonrpc': '2.0', 'id': 2, 'result': {}})
+    proc = Proc(messages)
+    await agy_acp._apply_model(agy_acp._Client(proc, set()), 's', result, 'new', 'low')
+    assert [item['method'] for item in requests(proc)] == ['session/set_model', 'session/set_config_option']
+    assert requests(proc)[-1]['params']['value'] == 'low'
+
+
+@pytest.mark.anyio
+async def test_close_during_model_selection_is_retryable():
+    proc = Proc([])
+    with pytest.raises(agy_acp.AcpError, match='agy_model_unavailable'):
+        await agy_acp._apply_model(agy_acp._Client(proc, set()), 's', {}, 'new', 'low')
+    assert [item['method'] for item in requests(proc)] == ['session/set_model']
+
+
+@pytest.mark.anyio
+async def test_progress_extension_rolls_but_stays_below_hard_cap():
+    start = asyncio.get_running_loop().time()
+    async with asyncio.timeout_at(start + 360) as deadline:
+        assert not agy_acp._extend_for_progress(deadline, start + 269, start + 720, 90)
+        assert deadline.when() == start + 360
+        assert agy_acp._extend_for_progress(deadline, start + 351, start + 720, 90)
+        assert deadline.when() == pytest.approx(start + 441)
+        for step in (431, 511, 591, 671):
+            assert agy_acp._extend_for_progress(deadline, start + step, start + 720, 90)
+        assert deadline.when() == start + 720
+        assert not agy_acp._extend_for_progress(deadline, start + 719, start + 720, 90)
+    async with asyncio.timeout_at(start + 360) as deadline:
+        assert not agy_acp._extend_for_progress(deadline, start + 360, start + 720, 90)
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize('kind, status, extends', [
+    ('agent_message_chunk', '', True), ('agent_thought_chunk', '', False),
+    ('tool_call', 'completed', True), ('tool_call', 'in_progress', False),
+])
+async def test_only_text_and_tool_results_extend_prompt(kind, status, extends):
+    proc = Proc([
+        {'jsonrpc': '2.0', 'method': 'session/update', 'params': {'sessionId': 's', 'update': {
+            'sessionUpdate': kind, 'content': {'type': 'text', 'text': '示例'},
+            'toolCallId': 'tool-1', 'name': 'Read', 'status': status,
+        }}},
+        {'jsonrpc': '2.0', 'id': 1, 'result': {'stopReason': 'end_turn'}},
+    ])
+    client = agy_acp._Client(proc, set())
+    async with asyncio.timeout(10) as deadline:
+        initial = deadline.when()
+        await collect(agy_acp._stream_prompt(client, 's', '合成验证', deadline, initial + 30, 20))
+        assert (deadline.when() > initial) is extends
+    assert client.trace.extended is extends
 
 
 def test_mcp_servers_requires_explicit_stdio_command(tmp_path):

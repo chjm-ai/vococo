@@ -448,6 +448,7 @@ async def _converse(
             dispatch.record_usage(session_key, turn_id, automatic_usage, execution_id=execution_id)
         if automatic and task and task.get("origin") != "chat" and automatic_usage:
             bg_tasks.add_daily_usage(automatic_usage)
+    agy_error_footer = ""
     # 流式异常(SDK/进程层面,连 ResultMessage 都没拿到)→ 构造一条错误回复,
     # 确保 sink.done() 始终能发(前端不会空泡)
     if reply is None and _err_msg:
@@ -466,6 +467,10 @@ async def _converse(
         from ..core.agent import describe_llm_error
 
         note = describe_llm_error(reply.api_error_status, reply.error)
+        if agy_path and reply.text.strip():
+            # 网页实时和历史有正文分段时不会用终态全文兜底。
+            agy_error_footer = danger.redact_secrets(f"\n\n{note}")
+            timeline.text(agy_error_footer)
         reply.text = f"{reply.text.rstrip()}\n\n{note}" if reply.text.strip() else note
     if reply is not None:
         # 输出侧敏感内容过滤(安全评估 P0-2)第二层:此时全文已经完整,能兜住
@@ -481,6 +486,8 @@ async def _converse(
         # 不得借 set_last_error / usage / sink.done 把已删除会话重新建回来。
         if not persisted:
             return reply
+        if agy_error_footer:
+            await sink.text(agy_error_footer)
         # 记下这一轮是不是以报错收尾(限流/超时等)——语音端靠这个字段找出"卡住
         # 等续聊"的网页会话,不用去猜最后一条回复文本是不是错误提示。
         session_store.set_last_error(session_key, bool(reply.is_error))
