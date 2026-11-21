@@ -26,6 +26,9 @@ CHOICES = {
 }
 MODELS = tuple(key.split(":", 1)[1] for key in CHOICES)
 MAX_PROMPT = 8000
+NATIVE_TURN_TIMEOUT = 360
+NATIVE_MAX_TIMEOUT = 720
+NATIVE_PROGRESS_WINDOW = 90
 DEFAULT_MODEL = MODELS[1]
 CLASH = "http://127.0.0.1:7890"
 MAX_OUTPUT = 1024 * 1024
@@ -644,7 +647,11 @@ _ERRORS = {
     "agy_effort_unavailable": "这个会话暂时不支持所选思考档位，请换一档。",
     "agy_output_limit": "Antigravity 本轮输出过大（超过 8MB），已停止；请让它截短命令输出或分步执行。",
     "agy_protocol_error": "Antigravity 返回了无法识别的数据，本轮已停止。",
-    "agy_input_failed": "Antigravity 启动时输入失败，请重试。",
+    "agy_response_mismatch": "Antigravity 返回的响应编号不匹配，本轮结果可能不完整。",
+    "agy_finish_invalid": "Antigravity 未返回有效的结束信号，本轮结果可能不完整。",
+    "agy_finish_limit": "Antigravity 提前达到模型输出或轮次上限，本轮结果可能不完整。",
+    "agy_rpc_error": "Antigravity 拒绝了本轮请求。",
+    "agy_input_failed": "Antigravity 与 Vococo 的进程连接中断了。",
 }
 
 # 把 AGY 的工具名映射到 Web 前端已有的工具卡，命令行/文件编辑才有可读的卡片。
@@ -871,11 +878,13 @@ async def stream_native(key: str, turn_id: int, model: str, prompt: str, refusal
     from . import agy_acp, agy_handoff
 
     chunks = []
+    has_tool_results = False
     if not refusal and (not prompt.strip() or len(prompt) > MAX_PROMPT):
         refusal = f"Antigravity 会话只接受 1–{MAX_PROMPT} 字的纯文本。"
     if not refusal and native_pending(key):
         refusal = "会话正在运行或已切换模型，请重试。"
     if not refusal:
+        started_at = asyncio.get_running_loop().time()
         task = asyncio.current_task()
         _active_trials.add(task)
         _native_pending.add(key)
@@ -939,10 +948,12 @@ async def stream_native(key: str, turn_id: int, model: str, prompt: str, refusal
             turn_prompt = f"{_ACP_NOTE}{style_note}\n\n用户消息：\n{prompt}"
 
             async def consume_once(sid):
-                nonlocal session_id
+                nonlocal session_id, has_tool_results
                 async with aclosing(agy_acp.stream_turn(
-                        cwd, 360, base, turn_prompt, effort=effort, session_id=sid,
-                        extra_servers=extra_servers, allowed_tools=allowed_tools, approve=approve)) as events:
+                        cwd, NATIVE_TURN_TIMEOUT, base, turn_prompt, effort=effort, session_id=sid,
+                        extra_servers=extra_servers, allowed_tools=allowed_tools, approve=approve,
+                        max_timeout=NATIVE_MAX_TIMEOUT, progress_window=NATIVE_PROGRESS_WINDOW,
+                        started_at=started_at, turn_id=turn_id)) as events:
                     async for event, payload in events:
                         if event == "delta":
                             chunks.append(payload)
@@ -958,6 +969,7 @@ async def stream_native(key: str, turn_id: int, model: str, prompt: str, refusal
                                 yield ToolInput(display, tid,
                                                 _agy_tool_input(raw_name, payload.get("input") or {}))
                             else:
+                                has_tool_results = True
                                 ok, preview, detail = _agy_tool_result(
                                     raw_name, payload.get("status") or "",
                                     payload.get("output") or "", payload.get("exit_code"))
@@ -1010,7 +1022,14 @@ async def stream_native(key: str, turn_id: int, model: str, prompt: str, refusal
         except (ValueError, OSError, UpstreamError, agy_acp.AcpError) as exc:
             code = exc.code if isinstance(exc, (UpstreamError, agy_acp.AcpError)) else type(exc).__name__
             log.warning("Antigravity 网页轮次失败: turn_id=%s code=%s", turn_id, code)
-            refusal = _ERRORS.get(code, "Antigravity 会话未完成；请检查可用模型或稍后重试。")
+            if code == "agy_timeout":
+                refusal = "Antigravity 本轮达到执行时限。"
+                if has_tool_results or any(chunk.strip() for chunk in chunks):
+                    refusal += "本轮已返回的内容和工具结果已保留，请查看进度后分步继续。"
+                else:
+                    refusal += "没有收到正文或工具结果，可缩小任务范围后再试。"
+            else:
+                refusal = _ERRORS.get(code, "Antigravity 会话未完成；请检查可用模型或稍后重试。")
         finally:
             _native_pending.discard(key)
             _active_trials.discard(task)

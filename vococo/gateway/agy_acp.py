@@ -8,6 +8,10 @@
 import asyncio
 import json
 import uuid
+from contextlib import aclosing
+from datetime import datetime
+from pathlib import Path
+from time import monotonic
 
 import anyio
 
@@ -23,6 +27,40 @@ class AcpError(Exception):
     def __init__(self, code):
         super().__init__(code)
         self.code = code
+
+
+class _TurnTrace:
+    """只记录阶段、耗时和计数；不要把原生请求、响应或工具内容写进日志。"""
+
+    def __init__(self):
+        self.started = self.stage_started = monotonic()
+        self.stage = 'prepare'
+        self.stage_times = {}
+        self.first_text = self.last_progress = None
+        self.tool_results = 0
+        self.finish_received = False
+        self.extended = False
+        self.rpc_error = None
+
+    def enter(self, stage):
+        now = monotonic()
+        self.stage_times[self.stage] = round(now - self.stage_started, 3)
+        self.stage, self.stage_started = stage, now
+
+    def progress(self, kind):
+        self.last_progress = monotonic()
+        if kind == 'tool':
+            self.tool_results += 1
+        elif self.first_text is None:
+            self.first_text = round(self.last_progress - self.started, 3)
+
+    def summary(self):
+        now = monotonic()
+        stage_times = {**self.stage_times, self.stage: round(now - self.stage_started, 3)}
+        idle = None if self.last_progress is None else round(now - self.last_progress, 3)
+        return (f'stage={self.stage} elapsed_s={now - self.started:.3f} stage_s={stage_times} '
+                f'first_text_s={self.first_text} idle_s={idle} tool_results={self.tool_results} '
+                f'finish_received={self.finish_received} extended={self.extended} rpc_error={self.rpc_error}')
 
 
 def _valid_id(value) -> bool:
@@ -88,19 +126,47 @@ def _tool_events(update: dict, state: tuple[set[str], set[str]]):
     return events
 
 
+def _notified_options(message, session_id):
+    params = message.get('params')
+    if message.get('method') != 'session/update' or not isinstance(params, dict):
+        return None
+    update = params.get('update')
+    if (params.get('sessionId') != session_id or not isinstance(update, dict)
+            or update.get('sessionUpdate') != 'config_option_update'):
+        return None
+    options = update.get('configOptions')
+    return options if isinstance(options, list) else None
+
+
+def _visible_updates(message, tool_state):
+    update = (message.get('params') or {}).get('update') or {}
+    kind = update.get('sessionUpdate')
+    if kind in ('tool_call', 'tool_call_update'):
+        yield from _tool_events(update, tool_state)
+    elif kind in ('agent_message_chunk', 'agent_thought_chunk'):
+        text = (update.get('content') or {}).get('text')
+        if isinstance(text, str) and text:
+            yield ('delta' if kind == 'agent_message_chunk' else 'thinking'), text
+
+
 class _Client:
-    def __init__(self, proc, allowed, approve=None):
+    def __init__(self, proc, allowed, approve=None, trace=None):
         self.proc = proc
         self.allowed = set(allowed)
         self.approve = approve
+        self.trace = trace or _TurnTrace()
         self.seq = 0
         self.output = 0
+        self.pending = None
 
     async def _send(self, body):
         self.proc.stdin.write((json.dumps(body, ensure_ascii=False) + '\n').encode())
         await self.proc.stdin.drain()
 
     async def _read(self):
+        if self.pending is not None:
+            message, self.pending = self.pending, None
+            return message
         line = await self.proc.stdout.readline()
         if not line:
             raise AcpError('agy_unavailable')
@@ -140,49 +206,74 @@ class _Client:
             # 不把「已拒绝」当成正常完成，避免用户误以为任务跑完了。
             raise AcpError('agy_unexpected_tool')
 
+    async def read_config_update(self, session_id):
+        # 旧版先确认设模，再发档位通知；短暂等一帧，不吞掉其他事件。
+        try:
+            async with asyncio.timeout(0.15):
+                message = await self._read()
+        except TimeoutError:
+            return None
+        except AcpError as exc:
+            if exc.code == 'agy_unavailable':
+                return None
+            raise
+        options = _notified_options(message, session_id)
+        if options is None:
+            self.pending = message
+        return options
+
+    def _response(self, message, request_id, method):
+        if not {'result', 'error'}.intersection(message):
+            raise AcpError('agy_protocol_error')
+        response_id = message.get('id')
+        # 客户端始终只有一个未完成请求；忽略对不上的响应会等到超时。
+        if type(response_id) is not int or response_id != request_id:
+            raise AcpError('agy_response_mismatch')
+        if 'error' in message:
+            error = message['error']
+            if not isinstance(error, dict):
+                raise AcpError('agy_protocol_error')
+            code = error.get('code')
+            if type(code) is int and -(2**31) <= code < 2**31:
+                self.trace.rpc_error = code
+            raise AcpError('agy_session_mismatch' if method == 'session/load' else 'agy_rpc_error')
+        result = message['result']
+        if result is not None and not isinstance(result, dict):
+            raise AcpError('agy_protocol_error')
+        return result or {}
+
     async def request(self, method, params, *, replay=False):
-        """流式请求：逐条产出 ('delta', 文本)、('thinking', 文本)、('tool', 工具事件)，
-        最后产出 ('result', 结果)。replay=True 时只回放结果，不重发历史正文和工具。
-        """
+        """回放只取请求结果，不重发历史正文和工具。"""
+        stage = params['configId'] if method == 'session/set_config_option' else method
+        self.trace.enter(stage)
         self.seq += 1
         request_id = self.seq
         await self._send({'jsonrpc': '2.0', 'id': request_id, 'method': method, 'params': params})
         tool_state: tuple[set[str], set[str]] = (set(), set())
+        notified = None
+        setting_model = method == 'session/set_model' or stage == 'model'
         while True:
             message = await self._read()
-            if message.get('method') == 'session/update':
-                update = (message.get('params') or {}).get('update') or {}
-                kind = update.get('sessionUpdate')
-                if replay:
-                    continue
-                if kind == 'agent_message_chunk':
-                    content = update.get('content') or {}
-                    text = content.get('text')
-                    if isinstance(text, str) and text:
-                        yield 'delta', text
-                elif kind == 'agent_thought_chunk':
-                    content = update.get('content') or {}
-                    text = content.get('text')
-                    if isinstance(text, str) and text:
-                        yield 'thinking', text
-                elif kind in ('tool_call', 'tool_call_update'):
-                    for event in _tool_events(update, tool_state):
+            inbound = message.get('method')
+            if inbound == 'session/update':
+                options = _notified_options(message, params.get('sessionId')) if setting_model else None
+                if options is not None:
+                    notified = options
+                elif not replay:
+                    for event in _visible_updates(message, tool_state):
                         yield event
-                continue
-            if message.get('method') == 'session/request_permission':
+            elif inbound == 'session/request_permission':
                 await self._permission(message)
-                continue
-            if 'method' in message and 'id' in message:
+            elif 'method' not in message:
+                result = self._response(message, request_id, method)
+                if notified is not None and not isinstance(result.get('configOptions'), list):
+                    result = {**result, 'configOptions': notified}
+                yield 'result', result
+                return
+            elif 'id' in message:
                 # 未声明任何客户端能力时，agent 不该反向请求；不认识的请求一律拒绝。
                 await self._send({'jsonrpc': '2.0', 'id': message['id'],
                                   'error': {'code': -32601, 'message': 'unsupported'}})
-                continue
-            if message.get('id') == request_id:
-                if 'error' in message:
-                    raise AcpError('agy_session_mismatch' if method == 'session/load'
-                                   else 'agy_protocol_error')
-                yield 'result', message.get('result') or {}
-                return
 
 
 def _mcp_servers(config_path):
@@ -213,50 +304,72 @@ async def _result(events):
     return result
 
 
-async def _apply_model(client, session_id, result, model, effort):
-    """用官方 configOptions 切模型族和思考档位；没有 configOptions 的旧版退回 set_model。"""
-    configs = {item.get('id'): item for item in (result or {}).get('configOptions') or []
-               if isinstance(item, dict)}
-    model_cfg = configs.get('model') or {}
-    model_values = [opt.get('value') for opt in model_cfg.get('options') or []
-                    if isinstance(opt, dict)]
-    if model_values:
-        if model not in model_values:
-            # 极端灰度下 configOptions 可能只列带档位后缀的变体；按族+档位挑一个可用值。
-            candidates = [value for value in model_values if value.startswith(model + '-')]
-            preferred = f"{model}-{effort}" if effort else ""
-            if preferred in candidates:
-                model = preferred
-            elif candidates:
-                model = candidates[0]
-            else:
-                raise AcpError('agy_model_unavailable')
-        try:
-            await _result(client.request('session/set_config_option', {
-                'sessionId': session_id, 'configId': 'model', 'value': model}))
-        except AcpError:
-            raise AcpError('agy_model_unavailable') from None
+def _config_options(result):
+    return {item['id']: item for item in (result or {}).get('configOptions') or []
+            if isinstance(item, dict) and isinstance(item.get('id'), str)}
+
+
+def _option_values(config):
+    return [opt['value'] for opt in config.get('options') or []
+            if isinstance(opt, dict) and isinstance(opt.get('value'), str)]
+
+
+def _model_value(model, effort, values):
+    if model in values:
+        return model
+    # 灰度版本可能只列出带档位后缀的模型。
+    candidates = [value for value in values if value.startswith(model + '-')]
+    if not candidates:
+        raise AcpError('agy_model_unavailable')
+    preferred = f'{model}-{effort}'
+    return preferred if preferred in candidates else candidates[0]
+
+
+async def _config_result(client, method, params, rejected):
+    try:
+        return await _result(client.request(method, params))
+    except AcpError as exc:
+        # 正文尚未提交，旧进程提前退出时仍允许外层重试；协议错误不能伪装成档位错误。
+        if exc.code in ('agy_rpc_error', 'agy_unavailable'):
+            raise AcpError(rejected) from exc
+        raise
+
+
+async def _set_model(client, session_id, model, effort, model_cfg):
+    values = _option_values(model_cfg)
+    if values:
+        model = _model_value(model, effort, values)
+        method = 'session/set_config_option'
+        params = {'sessionId': session_id, 'configId': 'model', 'value': model}
     else:
-        try:
-            await _result(client.request('session/set_model', {
-                'sessionId': session_id, 'modelId': model}))
-        except AcpError:
-            raise AcpError('agy_model_unavailable') from None
+        method = 'session/set_model'
+        params = {'sessionId': session_id, 'modelId': model}
+    return model, await _config_result(client, method, params, 'agy_model_unavailable')
+
+
+async def _apply_model(client, session_id, result, model, effort):
+    configs = _config_options(result)
+    model_cfg = configs.get('model', {})
+    model, updated = await _set_model(client, session_id, model, effort, model_cfg)
     if not effort:
         return
-    thought_cfg = configs.get('thought_level') or {}
-    levels = [opt.get('value') for opt in thought_cfg.get('options') or []
-              if isinstance(opt, dict)]
+    options = updated.get('configOptions')
+    if not isinstance(options, list):
+        options = await client.read_config_update(session_id)
+    legacy = (result or {}).get('models')
+    previous = model_cfg.get('currentValue') or (legacy.get('currentModelId') if isinstance(legacy, dict) else None)
+    if options is not None:
+        configs = _config_options({'configOptions': options})
+    elif model != previous:
+        # 换了模型但上游没返回新档位时，交给该模型的默认档，不用上一个模型的档位。
+        return
+    levels = _option_values(configs.get('thought_level', {}))
     if not levels:
         return
     if effort not in levels:
-        # 旧灰度只有 low/medium/high；用户存了 xhigh 时按最高可用档继续。
         effort = 'high' if 'high' in levels else levels[-1]
-    try:
-        await _result(client.request('session/set_config_option', {
-            'sessionId': session_id, 'configId': 'thought_level', 'value': effort}))
-    except AcpError:
-        raise AcpError('agy_effort_unavailable') from None
+    await _config_result(client, 'session/set_config_option', {
+        'sessionId': session_id, 'configId': 'thought_level', 'value': effort}, 'agy_effort_unavailable')
 
 
 def _tool_names(server_name, tools):
@@ -266,65 +379,120 @@ def _tool_names(server_name, tools):
     return names
 
 
-async def stream_turn(workspace, timeout, model, prompt, *, effort=None, session_id=None,
-                      extra_servers=(), allowed_tools=(), approve=None):
-    """运行一轮 ACP 会话；产出 ('delta', 文本)、('session', id)、('done', None)。
+async def _open_session(client, workspace, servers, session_id):
+    await _result(client.request('initialize', {
+        'protocolVersion': 1, 'clientCapabilities': {},
+        'clientInfo': {'name': 'vococo', 'version': '1'}}))
+    params = {'cwd': str(workspace), 'mcpServers': servers}
+    if session_id:
+        params['sessionId'] = session_id
+        result = await _result(client.request('session/load', params, replay=True))
+        if result.get('sessionId') != session_id:
+            raise AcpError('agy_session_mismatch')
+    else:
+        result = await _result(client.request('session/new', params))
+        session_id = result.get('sessionId')
+        if not _valid_id(session_id):
+            raise AcpError('agy_session_mismatch')
+    return session_id, result
 
-    model 是模型族（如 gemini-4-neon），effort 是 low/medium/high/xhigh。"""
-    from pathlib import Path
 
-    workspace = Path(workspace)
-    servers = _mcp_servers(workspace / '.agents/mcp_config.json')
-    allowed = {name for server in servers for name in _tool_names(server['name'], _CONTEXT_TOOLS)}
-    allowed |= set(allowed_tools or ())
-    servers = [*servers, *extra_servers]
-    proc = None
+def _extend_for_progress(deadline, now, hard_end, progress_window):
+    # 有新结果才把截止时间往后推；沉默、思考和工具开始不续时。
+    current = deadline.when()
+    target = min(hard_end, now + progress_window)
+    if now < current < target:
+        deadline.reschedule(target)
+        return True
+    return False
+
+
+def _check_finish(result):
+    stop = result.get('stopReason')
+    if not isinstance(stop, str) or not stop.strip():
+        raise AcpError('agy_finish_invalid')
+    if stop in ('cancelled', 'refusal'):
+        raise AcpError('agy_request_failed')
+    if stop in ('max_tokens', 'max_turn_requests'):
+        raise AcpError('agy_finish_limit')
+    if stop != 'end_turn':
+        raise AcpError('agy_finish_invalid')
+
+
+async def _stream_prompt(client, session_id, prompt, deadline, hard_end, progress_window):
+    trace = client.trace
+    params = {'sessionId': session_id, 'prompt': [{'type': 'text', 'text': prompt}]}
     try:
-        async with asyncio.timeout(timeout):
+        async with aclosing(client.request('session/prompt', params)) as events:
+            async for kind, payload in events:
+                if kind == 'result':
+                    trace.finish_received = True
+                    _check_finish(payload)
+                    continue
+                if (kind == 'delta' and payload.strip()) or (kind == 'tool' and payload['phase'] == 'end'):
+                    trace.progress(kind)
+                    if _extend_for_progress(deadline, asyncio.get_running_loop().time(), hard_end, progress_window):
+                        trace.extended = True
+                yield kind, payload
+    except AcpError as exc:
+        if exc.code == 'agy_unavailable':
+            raise AcpError('agy_finish_invalid') from exc
+        raise
+
+
+def _turn_failure_code(exc, deadline):
+    if isinstance(exc, TimeoutError):
+        return 'agy_timeout' if deadline.expired() else 'agy_request_failed'
+    if isinstance(exc, (BrokenPipeError, ConnectionResetError)):
+        return 'agy_input_failed'
+    if isinstance(exc, OSError):
+        return 'agy_unavailable'
+    return 'agy_protocol_error'
+
+
+async def stream_turn(workspace, timeout, model, prompt, *, effort=None, session_id=None,
+                      extra_servers=(), allowed_tools=(), approve=None, max_timeout=None,
+                      progress_window=0, started_at=None, turn_id=None):
+    """原生 ACP 一轮；所有尝试共享同一个起点和硬上限。"""
+    loop = asyncio.get_running_loop()
+    start = loop.time() if started_at is None else started_at
+    soft_end, hard_end = start + timeout, start + max(timeout, max_timeout or timeout)
+    trace, deadline = _TurnTrace(), asyncio.timeout_at(soft_end)
+    workspace, proc = Path(workspace), None
+    outcome = 'interrupted'
+    try:
+        if loop.time() >= soft_end:
+            raise AcpError('agy_timeout')
+        servers = _mcp_servers(workspace / '.agents/mcp_config.json')
+        allowed = {name for s in servers for name in _tool_names(s['name'], _CONTEXT_TOOLS)}
+        trace.enter('spawn')
+        async with deadline:
             proc = await agy_trial.spawn_cli(
                 (str(agy_trial.cli_binary()), '--mode', 'accept-edits',
                  '--settings', agy_trial.SETTINGS_ACP, 'acp', '--stdio'),
                 workspace, asyncio.subprocess.PIPE)
-            client = _Client(proc, allowed, approve=approve)
-            await _result(client.request('initialize', {
-                'protocolVersion': 1, 'clientCapabilities': {},
-                'clientInfo': {'name': 'vococo', 'version': '1'}}))
-            if session_id:
-                result = await _result(client.request('session/load', {
-                    'sessionId': session_id, 'cwd': str(workspace), 'mcpServers': servers}, replay=True))
-                if not result or result.get('sessionId') != session_id:
-                    raise AcpError('agy_session_mismatch')
-            else:
-                result = await _result(client.request('session/new', {
-                    'cwd': str(workspace), 'mcpServers': servers}))
-                session_id = (result or {}).get('sessionId')
-                if not _valid_id(session_id):
-                    raise AcpError('agy_session_mismatch')
+            client = _Client(proc, allowed.union(allowed_tools or ()), approve=approve, trace=trace)
+            session_id, result = await _open_session(client, workspace, [*servers, *extra_servers], session_id)
             await _apply_model(client, session_id, result, model, effort)
             yield 'session', session_id
-            stop = None
-            async for kind, payload in client.request('session/prompt', {
-                    'sessionId': session_id,
-                    'prompt': [{'type': 'text', 'text': prompt}]}):
-                if kind == 'delta':
-                    yield 'delta', payload
-                elif kind in ('thinking', 'tool'):
-                    yield kind, payload
-                elif kind == 'result':
-                    stop = payload.get('stopReason')
-            if stop in ('cancelled', 'refusal'):
-                raise AcpError('agy_request_failed')
-            yield 'done', None
-    except TimeoutError as exc:
-        raise AcpError('agy_timeout') from exc
-    except (BrokenPipeError, ConnectionResetError) as exc:
-        raise AcpError('agy_input_failed') from exc
-    except (ValueError, AttributeError, TypeError) as exc:
-        raise AcpError('agy_protocol_error') from exc
-    except OSError as exc:
-        raise AcpError('agy_unavailable') from exc
+            async with aclosing(_stream_prompt(client, session_id, prompt, deadline, hard_end, progress_window)) as events:
+                async for event in events:
+                    yield event
+        outcome = 'ok'
+        yield 'done', None
+    except AcpError as exc:
+        outcome = exc.code
+        raise
+    except (OSError, ValueError, AttributeError, TypeError) as exc:
+        outcome = _turn_failure_code(exc, deadline)
+        raise AcpError(outcome) from exc
     finally:
-        # ACP 是常驻服务端，一轮结束后不会自己退出；无论成功失败都回收整组进程。
-        if proc is not None:
-            with anyio.CancelScope(shield=True):
-                await agy_trial.terminate(proc)
+        try:
+            if turn_id is not None:
+                timestamp = datetime.now().astimezone().isoformat(timespec='milliseconds')
+                print(f'[agy-acp] at={timestamp} turn_id={turn_id} outcome={outcome} {trace.summary()}', flush=True)
+        finally:
+            # ACP 不会自己退出；成功、失败和取消时都回收整组进程。
+            if proc is not None:
+                with anyio.CancelScope(shield=True):
+                    await agy_trial.terminate(proc)
