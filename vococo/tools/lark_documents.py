@@ -204,6 +204,7 @@ async def run_cli(argv: list[str], content: str, image: bytes | None = None) -> 
 
 
 async def execute(args: dict) -> dict:
+    receipt = danger.ApprovalReceipt()
     try:
         argv, content = command_for(args)
         operation = args.get("operation", "fetch")
@@ -212,13 +213,17 @@ async def execute(args: dict) -> dict:
             details = dict(args)
             if image is not None:
                 details.update(image_sha256=hashlib.sha256(image).hexdigest(), image_bytes=len(image))
-            detail = json.dumps(details, ensure_ascii=False)
-            if not await danger.require_approval("写入飞书文档", detail):
+            detail = json.dumps(details, ensure_ascii=False, sort_keys=True)
+            if not await danger.require_approval("写入飞书文档", detail, immutable_tool="lark_document",
+                                                  receipt=receipt):
                 return {"isError": True, "content": [{"type": "text", "text": "未批准，未写入飞书。"}]}
         result = await run_cli(argv, content, image) if image is not None else await run_cli(argv, content)
         data = result.get("data")
         incomplete = isinstance(data, dict) and data.get("result") in {"partial_success", "failed"}
-        return {"isError": not result.get("ok", False) or incomplete,
+        succeeded = result.get("ok") is True and not incomplete
+        if receipt.replay:
+            receipt.replay.succeeded = succeeded
+        return {"isError": not succeeded,
                 "content": [{"type": "text", "text": json.dumps(result, ensure_ascii=False)}]}
     except (ValueError, OSError, TimeoutError) as exc:
         # 写入超时不自动重试，防止重复创建或追加；不把网络/钥匙串错误误报成需要登录。

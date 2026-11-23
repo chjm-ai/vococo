@@ -326,3 +326,26 @@ def test_rule_review_go_clean_opens_security(isolated):
     res = anyio.run(notice_actions.act, nid, "去清理")
     assert res == {"ok": True, "message": "去清理", "conv": None, "open": "security"}
     assert notices.get(nid)["status"] == "answered"
+
+
+@pytest.mark.parametrize("later_turn", [False, True])
+def test_startup_recovers_only_legacy_approval_stopped_before_execution(isolated, later_turn):
+    from vococo.memory import session_store
+
+    nid = _expired_approval("task:legacy")
+    notices.set_status(nid, "answered", "允许一次")
+    n = notices.get(nid)
+    user = (f"刚才等批准的操作,主人已批准(允许一次):{n['reason']}\n{n['detail']}\n"
+            "请重新执行这一步,并把之前因此没做完的部分补完。")
+    session_store.append("task:legacy", user, "(执行失败:执行出错:原模型会话不可恢复，已停止续接)")
+    if later_turn:
+        session_store.append("task:legacy", "之后另问了一句", "之后的一轮")
+    other = _expired_approval("task:other")
+    notices.set_status(other, "answered", "允许一次")
+    session_store.append("task:other", user, "外部操作已完成")
+    notice_actions.startup()
+    assert notices.get(nid)["status"] == ("verify_required" if later_turn else "approved_unrun")
+    assert notices.get(other)["status"] == "answered"
+    notices.set_status(nid, "answered", notice_actions.RERUN_LABEL)
+    notice_actions.startup()
+    assert notices.get(nid)["status"] == "answered"

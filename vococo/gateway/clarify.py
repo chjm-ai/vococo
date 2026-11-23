@@ -31,6 +31,7 @@ class _Ctx:
     adapter: object  # 有 present_choice / send 的 adapter
     chat_id: object
     turn_id: int | None = None
+    model: str = ""
     # generate_image 在 Web 渠道已自动展示的文件。本轮内 send_image 不得重复发送。
     auto_sent_image_paths: set[str] = field(default_factory=set)
 
@@ -86,11 +87,11 @@ def current() -> Optional[_Ctx]:
     return source if source and source.session_key == ctx.session_key else ctx
 
 
-def bind_turn(session_key: str, turn_id: int) -> contextvars.Token:
+def bind_turn(session_key: str, turn_id: int, *, model: str = "") -> contextvars.Token:
     ctx = current()
     adapter = ctx.adapter if ctx and ctx.session_key == session_key else background_adapter()
     chat_id = ctx.chat_id if ctx and ctx.session_key == session_key else session_key
-    return _source_current.set(_Ctx(session_key, adapter, chat_id, turn_id))
+    return _source_current.set(_Ctx(session_key, adapter, chat_id, turn_id, model))
 
 
 def unbind_turn(session_key: str, turn_id: int, token: contextvars.Token) -> None:
@@ -192,7 +193,9 @@ def register(session_key: str, choices: list[str], notice: Optional[dict] = None
                 prompt=notice.get("prompt", ""), options=list(choices or []),
                 clarify_id=p.clarify_id, reason=notice.get("reason", ""),
                 detail=notice.get("detail", ""), tool=notice.get("tool", ""),
-                rule=notice.get("rule"),
+                rule=notice.get("rule"), source_turn_id=notice.get("source_turn_id"),
+                operation_key=notice.get("operation_key"),
+                resume_model=notice.get("resume_model"), resume_sdk=notice.get("resume_sdk"),
             )
         except Exception as exc:  # noqa: BLE001 —— 记通知失败不影响提问本身
             print(f"[clarify] 记录通知失败:{exc}", flush=True)

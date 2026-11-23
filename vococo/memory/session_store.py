@@ -189,6 +189,12 @@ def _user_attachment_refs(files: str | None, audios: str | None, videos: str | N
     return refs
 
 
+def latest_turn_id(session_key: str) -> int | None:
+    c = _conn()
+    return c.execute("SELECT MAX(id) FROM turns WHERE session_key=? AND id>?",
+                     (session_key, _watermark(c, session_key))).fetchone()[0]
+
+
 def load_recent(session_key: str, limit: int = 40, *, after_id: int = 0) -> list[Turn]:
     """只取当前会话(水位线之后)的最近 N 轮;跳过进行中(assistant_text='')的 turn。"""
     from ..core.agent import Turn  # 延迟 import:打破模块级循环依赖
@@ -683,6 +689,17 @@ def sync_external_context(session_key: str, sdk_id: str, revision: int) -> None:
     c.execute("INSERT INTO sdk_external_context VALUES (?,?,?) ON CONFLICT(session_key,sdk_id) DO UPDATE SET "
               "revision=MAX(revision,excluded.revision)", (session_key, sdk_id, revision))
     c.commit()
+
+
+def approval_origin(session_key: str, turn_id: int | None, notice_ts: float) -> dict | None:
+    """旧通知没有轮次 ID，只能用审批登记前的最近一轮判定该轮是否受限。"""
+    c = _conn()
+    row = c.execute(
+        "SELECT source_access FROM turns WHERE session_key=? "
+        "AND ((? IS NOT NULL AND id=?) OR (? IS NULL AND ts<=?)) ORDER BY id DESC LIMIT 1",
+        (session_key, turn_id, turn_id, turn_id, notice_ts),
+    ).fetchone()
+    return json.loads(row[0]) if row and row[0] else ({} if row else None)
 
 
 def active_source_access(session_key: str) -> dict:

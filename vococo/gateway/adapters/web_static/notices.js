@@ -58,6 +58,8 @@ function openNoticeConversation(it){
 function noticeItemHtml(it){
   const state = it.kind==="review" ? '<span class="ntstate late">每月提醒</span>'
     : it.kind==="decision" ? '<span class="ntstate wait">等你拍板 · 选了它接着做</span>'
+    : it.status==="approved_unrun" ? '<span class="ntstate late">已批准，未执行</span>'
+    : it.status==="verify_required" ? '<span class="ntstate late">执行结果未知，请先核对</span>'
     : it.status==="pending" ? '<span class="ntstate wait">等你回答</span>' : '<span class="ntstate late">错过了 · 点选项接着做</span>';
   const kind = {approval:"审批", ask:"提问", review:"规则清理", decision:"拍板"}[it.kind] || "通知";
   const opts = it.options.length
@@ -67,7 +69,7 @@ function noticeItemHtml(it){
     <div class="ntmeta">${kind} · ${state} · ${esc(fmtTime(it.ts))}</div>
     ${it.conv?`<a href="#" class="nttitle" data-ntgo="${esc(it.id)}">${esc(it.title||"会话")}</a>`:""}
     <div class="ntprompt">${mdToHtml(it.prompt||"")}</div>
-    <div class="ntopts">${opts}${it.status==="expired"?`<button class="miniact" data-ntdismiss="${esc(it.id)}">忽略</button>`:""}</div>
+    <div class="ntopts">${opts}${it.status!=="pending"?`<button class="miniact" data-ntdismiss="${esc(it.id)}">忽略</button>`:""}</div>
   </div>`;
 }
 
@@ -103,6 +105,7 @@ function renderNoticePop(){
 }
 
 async function actNotice(id, label, btn){
+  if(label==="用当前模型重新执行" && !confirm("先核对先前的执行结果，避免重复操作。确认在原任务用当前模型重跑？旧审批不会沿用。")) return;
   const row = btn.closest(".ntrow");
   row.querySelectorAll("button").forEach(x=>x.disabled=true);
   const it = NTC.items.find(x=>x.id===id);
@@ -117,8 +120,9 @@ async function actNotice(id, label, btn){
     return;
   }
   if(it && it.conv) delete S.pendingChoice[it.conv];
-  $("#noticePop").hidden = true;
+  if(!d.recovery) $("#noticePop").hidden = true;
   await loadNotices();
+  if(d.recovery) return;
   if(d.open){ vococoLazy.run("settings", ()=>openSettingsTab(d.open)); return; }  // 规则清理提醒 → 设置页「安全」
   const conv = d.conv || (it && it.conv);
   if(conv && label!=="拒绝") openNoticeConversation({...it, conv});  // 去看它接着干

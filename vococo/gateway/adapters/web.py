@@ -4077,7 +4077,9 @@ class WebAdapter:
             is_chat = chats.mode(n["session_key"]) == "chat"
             items.append({
                 "id": n["id"], "ts": n["ts"], "kind": n["kind"], "status": n["status"],
-                "prompt": n["prompt"], "options": n["options"], "reason": n["reason"],
+                "prompt": n["prompt"], "options": (
+                    [notice_actions.RERUN_LABEL] if n["status"] in notices.RECOVERY_STATUSES else n["options"]
+                ), "reason": n["reason"],
                 "clarify_id": n["clarify_id"] if n["status"] == "pending" else None,
                 "conv": conv, "chat_mode": is_chat,
                 "agent_id": session_store.session_binding(n["session_key"]).get("agent_id") if is_chat else None,
@@ -4119,7 +4121,8 @@ class WebAdapter:
             return web.json_response({"error": "这条已经处理过了"}, status=404)
         if n["status"] == "pending":
             return web.json_response({"error": "还在等你回答,选一个选项即可"}, status=400)
-        notices.set_status(n["id"], "dismissed")
+        if not notices.set_status(n["id"], "dismissed", expected=n["status"]):
+            return web.json_response({"error": "审批状态已变化，请刷新"}, status=409)
         return web.json_response({"ok": True})
 
     @_authed

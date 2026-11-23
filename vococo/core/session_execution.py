@@ -126,7 +126,7 @@ class SharedTurn:
 
 
 async def stream_run(turn: SharedTurn, user_text: str, *, stream_fn, model=None,
-                     compact: bool = False, **execution):
+                     compact: bool = False, allow_precompact: bool = True, **execution):
     """同一轮准备与预压缩；保留入口注入的 stream_fn 和各自执行限制。"""
     model = model or turn.chosen_model or config.MODEL
     resolved_model, _ = providers.resolve(model, config.MODEL)
@@ -138,7 +138,7 @@ async def stream_run(turn: SharedTurn, user_text: str, *, stream_fn, model=None,
     incoming = attachment_policy.incoming_units(
         options.get("images") or [], options.get("files") or [], window=window,
     )
-    if (not compact and turn.resume
+    if (allow_precompact and not compact and turn.resume
             and used + incoming >= _window_ratio(window, 0.65)):
         compact_options = {k: v for k, v in options.items() if k not in ("images", "files")}
         async for event in stream_fn([], "", resume=turn.resume, compact_only=True, **compact_options):

@@ -195,7 +195,7 @@ class GatewayRunner:
     async def _late_click(self, clarify_id: str, token: str) -> str:
         """点了已经超时的旧按钮:按铃铛的事后处理逻辑,把选择补回原会话(见 notice_actions)。"""
         n = notices.by_clarify(clarify_id)
-        if n is None or n["status"] not in notices.OPEN_STATUSES:
+        if n is None or n["status"] not in ("pending", "expired"):
             return "(这个选择已经处理过了)"
         if token == "other":
             return "直接在这里打字回答,我会带着上下文接着做。"
@@ -205,7 +205,7 @@ class GatewayRunner:
         res = await notice_actions.act(n["id"], label)
         if not res.get("ok"):
             return f"(没处理成:{res.get('error')})"
-        return f"已按你选的「{label}」接着处理。"
+        return res["message"] if n["kind"] == "approval" else f"已按你选的「{label}」接着处理。"
 
     async def _handle(self, adapter: Adapter, inc: Incoming) -> None:
         async with session_lease(inc.session_key):
