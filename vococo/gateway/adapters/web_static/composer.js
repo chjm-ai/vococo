@@ -77,17 +77,23 @@ function waitForSendAck(clientRequestId, timeout=4000){
     S.sendAcks[clientRequestId]=finish;
   });
 }
+function agyModelMarker(model){ return /^agy-(trial|native):/.test(model) ? model : ""; }
+function modelRequestSnapshot(){
+  const model=curModel();
+  return model ? {expected_model:model, engine_segment:S.models.engine_segment ?? null} : {};
+}
 async function send(text, display, opts){
   opts=opts||{};
   closeCmdMenu();
-  if(opts.manualText && agyCopyActive()) return;
+  if(isModelSwitching() || (opts.manualText && agyCopyActive())) return;
   if(!$("#callView").hidden && !opts.forceMain) return window.sendCallText(text);
   text=(text||"").trim(); if(!text && !S.images.length && !S.audios.length && !S.files.length && !S.libraryRefs.length) return;
   // 发送目标钉死在发起时的会话/附件快照:下面等上传的 await 期间用户可能已经切走,
   // S.conv/S.images 等全局状态会变成新会话的——不钉死就会把这条消息、气泡、回执错投过去。
-  let sendConv=S.conv;
+  let sendConv=S.conv, optimisticStream=null;
   const selectedModel=opts.manualText && typeof curModel==="function" ? curModel() : "";
-  const agyTrialModel=/^agy-(trial|native):/.test(selectedModel) ? selectedModel : "";
+  const agyTrialModel=agyModelMarker(selectedModel);
+  const modelRoute=opts.manualText ? modelRequestSnapshot() : {};
   const isCurrent=()=>S.conv===sendConv;
   const ownership=convOwnership(sendConv);
   const sendImages=S.images.slice(), sendAudios=S.audios.slice(), sendFiles=S.files.slice(), sendLibraryRefs=S.libraryRefs.slice();
@@ -158,7 +164,7 @@ async function send(text, display, opts){
   if(S.stream && !opts.forceSend && isCurrent()){
     if(meRow) meRow.remove();
     if(S.audioLoading) S.audioLoading=null;
-    const queued=queuePending(text, sendImages, sendAudios, sendFiles, sendLibraryRefs, agyTrialModel);
+    const queued=queuePending(text, sendImages, sendAudios, sendFiles, sendLibraryRefs, agyTrialModel, modelRoute);
     const pending=S.inflightComposer[sendConv];
     delete S.sending[sendConv]; delete S.inflightComposer[sendConv];
     if(queued){
@@ -172,14 +178,14 @@ async function send(text, display, opts){
   }
   if(!text.startsWith("/")) S.localSent[sendConv] = true;
   if(!text.startsWith("/") && !S.stream && isCurrent()){
-    ensureStream();
+    optimisticStream=ensureStream();
     if(auds.some(a=>!a.text)) S.stream.audioPending = true;
     if(meRow) S.stream.userRow=meRow;
   }
   const clientRequestId=newClientRequestId();
   S.sendAcks[clientRequestId]=false;
   const payload={
-    conv:sendConv, text, ...ownership,
+    conv:sendConv, text, ...ownership, ...modelRoute,
     ...(agyTrialModel ? {agy_trial_model:agyTrialModel} : {}),
     images:sendImages.map(x=>({data:x.data,media_type:x.media_type})),
     audios:sendAudios.map(x=>({id:x.id})),
@@ -219,10 +225,10 @@ async function send(text, display, opts){
   try{
     const r=await api("/send",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)});
     if(!r.ok){
-      let detail="";
-      try{ const d=await r.json(); detail=d.error||""; }catch(e){}
-      const error=new Error(detail||("HTTP "+r.status));
-      error.httpStatus=r.status;
+      let data={};
+      try{ data=await r.json(); }catch(e){}
+      const error=new Error(data.error||("HTTP "+r.status));
+      error.httpStatus=r.status; error.code=data.code;
       throw error;
     }
   }catch(err){
@@ -260,6 +266,8 @@ async function send(text, display, opts){
   delete S.sending[oldConv]; delete S.sending[sendConv];
   delete S.localSent[oldConv]; delete S.localSent[sendConv];
   delete S.sendAcks[clientRequestId];
+  meRow?.remove();
+  if(isCurrent() && optimisticStream && S.stream===optimisticStream) discardStream();
   // /send 失败时不能把附件和文字一起吞掉,否则用户只能重新选择文件,且误以为已发送。
   // 当前已切到别的会话时,也要把失败态写回原会话缓存,切回后才能重试。
   S.composerAttachments[oldConv]={images:sendImages,audios:sendAudios,files:sendFiles, libraryRefs:sendLibraryRefs};
@@ -270,7 +278,8 @@ async function send(text, display, opts){
     S.images=sendImages; S.audios=sendAudios; S.files=sendFiles; S.libraryRefs=sendLibraryRefs;
     saveComposerAttachments(); renderThumbs();
     $("#ta").value=text; autoGrow();
-    addBubble("ai","⚠️ 发送失败:"+sendError.message+"，附件已保留，可重试。" );
+    if(sendError.code==="model_mismatch") loadModels();
+    addBubble("ai","⚠️ 发送失败："+sendError.message+" 草稿和附件已保留。" );
   }
 }
 // 静默发命令(如 /model 切换):不渲染用户气泡,回执由服务端 message 事件带回
@@ -328,8 +337,9 @@ async function copyAgyCommand(){
 }
 function updateSendBtn(){
   const btn=$("#sendBtn"); if(!btn) return;
-  const copy=agyCopyActive();
-  btn.textContent=copy ? (S.agyHandoff.workspace ? "复制指令" : "准备中…") : "↑";
+  const copy=agyCopyActive(), switching=isModelSwitching();
+  btn.disabled=switching;
+  btn.textContent=switching ? "…" : copy ? (S.agyHandoff.workspace ? "复制指令" : "准备中…") : "↑";
   btn.setAttribute("aria-label",copy ? "复制 Antigravity 指令" : "发送");
   btn.title=copy ? "复制后在 Mac mini 的 SSH 终端粘贴运行，命令可能留在终端历史" : "发送";
   btn.classList.toggle("copy-mode",copy);
@@ -390,11 +400,11 @@ function restoreTaskStopped(conv, prev){
   renderTaskBar();
 }
 // ── 待发送队列 ────────────────────────────────────────────────────────────
-function queuePending(text, images, audios, files, libraryRefs, agyTrialModel=""){
+function queuePending(text, images, audios, files, libraryRefs, agyTrialModel="", modelRoute={}){
   if(!text && !(images||[]).length && !(audios||[]).length && !(files||[]).length && !(libraryRefs||[]).length) return;
   const q = S.pending[S.conv] || (S.pending[S.conv]=[]);
   if(q.length>=3){ pendFull(); return false; }  // 满 3 条不再排队,抖一下提示
-  q.push({id:++S.pendId, text, images:images||[], audios:audios||[], files:files||[], libraryRefs:libraryRefs||[], agyTrialModel});
+  q.push({id:++S.pendId, text, images:images||[], audios:audios||[], files:files||[], libraryRefs:libraryRefs||[], agyTrialModel, modelRoute});
   drawPending();
   return true;
 }
@@ -426,15 +436,27 @@ function drawPending(){
     if(it.error){
       tx.textContent+=" · 发送失败："+it.error;
       const retry=el("button","pdel"); retry.type="button"; retry.textContent="重试";
-      retry.onclick=()=>flushPending(S.conv,true); row.append(retry);
+      if(it.modelMismatch) retry.textContent="按当前模型重试";
+      retry.onclick=()=>{
+        if(isModelSwitching()) return;
+        const first=S.pending[S.conv]?.[0];
+        if(it!==first) return;
+        if(it.modelMismatch){
+          const model=curModel();
+          it.agyTrialModel=agyModelMarker(model); it.modelRoute=modelRequestSnapshot();
+          it.clientRequestId=null; it.modelMismatch=false;
+        }
+        flushPending(S.conv,true);
+      };
+      row.append(retry);
     }
     box.append(row);
   }
 }
 async function sendPendingNow(id){
   const conv=S.conv, q=S.pending[conv];
-  if(!q?.length || S.stopping?.[conv] || S.pendingSending?.[conv]) return;
-  const index=q.findIndex(item=>item.id===id); if(index<0) return;
+  if(!q?.length || isModelSwitching(conv) || S.stopping?.[conv] || S.pendingSending?.[conv]) return;
+  const index=q.findIndex(item=>item.id===id); if(index<0 || q[index].modelMismatch) return;
   const [item]=q.splice(index,1); delete item.error; q.unshift(item);
   drawPending();
   // 由取消终态推进一次队列，不在停止 HTTP 回执后重复发送。
@@ -448,7 +470,7 @@ function removePending(id){
 }
 // 任务完成 → 发出该会话待发送队列的第一条(逐条发:发一条,等它 done 再发下一条)
 async function flushPending(conv, retry=false){
-  const q=S.pending[conv]; if(!q?.length || (q[0].error && !retry)) return;
+  const q=S.pending[conv]; if(isModelSwitching(conv) || !q?.length || (q[0].error && !retry)) return;
   S.pendingSending=S.pendingSending||{};
   if(S.pendingSending[conv]){ S.pendingSending[conv].flushRequested=true; return; }
   const item=q.shift(); if(!q.length) delete S.pending[conv];
@@ -458,6 +480,8 @@ async function flushPending(conv, retry=false){
   try{ await sendPendingSnapshot(conv,item); }
   catch(error){
     item.error=error.message;
+    item.modelMismatch=error.code==="model_mismatch";
+    if(item.modelMismatch && conv===S.conv) loadModels();
     (S.pending[conv]||(S.pending[conv]=[])).unshift(item);
     if(conv===S.conv) drawPending();
   }finally{
@@ -485,7 +509,7 @@ async function sendPendingSnapshot(conv,item){
   const requestId=item.clientRequestId||(item.clientRequestId=newClientRequestId());
   S.sendAcks[requestId]=false;
   const payload={
-    conv, text:item.text, client_request_id:requestId,
+    conv, text:item.text, client_request_id:requestId, ...(item.modelRoute||{}),
     ...(item.agyTrialModel ? {agy_trial_model:item.agyTrialModel} : {}),
     library_refs:(item.libraryRefs||[]).map(reference=>reference.id),
     images:(item.images||[]).map(x=>({data:x.data,media_type:x.media_type})),
@@ -495,7 +519,11 @@ async function sendPendingSnapshot(conv,item){
   };
   try{
     const response=await api("/send",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)});
-    if(!response.ok){ const error=new Error("请求失败（"+response.status+"）"); error.httpStatus=response.status; throw error; }
+    if(!response.ok){
+      let data={}; try{ data=await response.json(); }catch(e){}
+      const error=new Error(data.error || "请求失败（"+response.status+"）");
+      error.httpStatus=response.status; error.code=data.code; throw error;
+    }
     loadConvs();
   }catch(error){
     if((error.httpStatus && error.httpStatus<500) || !await waitForSendAck(requestId)){
@@ -542,17 +570,19 @@ function saveDraft(conv=S.conv, value){
     else localStorage.removeItem(draftKey(conv));  // 清空了就删 key,不留空草稿
   }catch(e){}
 }
+function readDraft(conv){
+  try{ return localStorage.getItem(draftKey(conv))||""; }catch(e){ return ""; }
+}
 function restoreDraft(conv){
   closeComposerPrompts();
-  let v=""; try{ v=localStorage.getItem(draftKey(conv))||""; }catch(e){}
-  $("#ta").value=v; autoGrow();
+  $("#ta").value=readDraft(conv); autoGrow();
 }
 function clearDraft(conv){
   try{ localStorage.removeItem(draftKey(conv||S.conv)); }catch(e){}
 }
 $("#ta").addEventListener("input", ()=>saveDraft());
 // 欢迎屏快捷入口:点击直接发送
-document.querySelectorAll("#empty .sug[data-s]").forEach(b=>{ b.onclick=()=>send(b.dataset.s); });
+document.querySelectorAll("#empty .sug[data-s]").forEach(b=>{ b.onclick=()=>send(b.dataset.s,null,{manualText:true}); });
 
 // ── 图片 ────────────────────────────────────────────────────────────────
 // 原图 base64 并入待发送队列，前端压缩只用于缩略图，不覆盖原件。
@@ -1119,7 +1149,18 @@ async function onRecStop(){
 }
 // 把一份录音 blob 发去转写;单独抽出来是因为失败后"重试"要能重发同一份 blob,
 // 不用再走一遍 startRec() 让用户重新开口(blob 本身没问题时,失败大多是网络/服务抖动)
+function retainUnsentText(conv, text, error){
+  const current=conv===S.conv, draft=current ? $("#ta").value : readDraft(conv);
+  const value=[draft,text].filter(Boolean).join("\n");
+  saveDraft(conv,value);
+  if(!current) return;
+  $("#ta").value=value; autoGrow();
+  addBubble("ai","⚠️ "+error+" 文字已保留在草稿。");
+}
 async function sendVoice(blob, ext, conv){
+  const route=conv===S.conv ? modelRequestSnapshot() : (S.voiceRec[conv]?.route || {});
+  const marker=agyModelMarker(route.expected_model || "");
+  if(S.voiceRec[conv]) S.voiceRec[conv].route=route;
   try{
     const fd=new FormData(); fd.append("audio", blob, "voice."+ext);
     const r=await api("/transcribe",{method:"POST",body:fd});
@@ -1127,25 +1168,50 @@ async function sendVoice(blob, ext, conv){
     const st=S.voiceRec[conv]; delete S.voiceRec[conv];
     const here=S.conv===conv;   // 转写完成时是否还停留在发起录音的那个会话
     if(r.ok && d.text){
-      if(here && st && st.bubble){
-        // 还在原会话:文字回填占位气泡,再复用它自动发给 Claude(不重复冒泡)
-        st.bubble.classList.remove("voicebub"); setUserBubbleText(st.bubble, d.text);
-        appendUserFoot(st.bubble.closest(".row"), d.text);
-        await send(d.text, null, {reuseBubble:true, forceSend:true});
-      }else{
-        // 已切到别的会话:占位气泡早被清空,直接发到后台会话,靠历史/SSE 缓冲在切回时补出来;
-        // 若该会话还是未转正的本地新会话(local-xxx),后端不认识这个前缀,得先去掉
-        const realConv = String(conv).replace(/^local-/,"");
-        const payload={conv:realConv, text:d.text, images:[]};
-        await api("/send",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)});
-        if(realConv!==conv){ const c=S.convs.find(x=>x.conv===conv); if(c) c.conv=realConv; }
-        loadConvs();
+      if(here) st?.bubble?.closest(".row")?.remove();
+      if(isModelSwitching(conv) || !route.expected_model || (here && agyCopyActive())){
+        retainUnsentText(conv,d.text,"模型尚未确认，消息未发送。"); return;
       }
+      // 转写直发不消费键盘里的草稿与附件。
+      await sendVoiceText(conv,d.text,route,marker);
     } else if(here && st && st.bubble){ voiceFail(st.bubble, d.error, blob, ext, conv); }
   }catch(e){
     const st=S.voiceRec[conv]; delete S.voiceRec[conv];
     if(S.conv===conv && st && st.bubble) voiceFail(st.bubble, "转写失败:"+e.message, blob, ext, conv);
   }
+}
+async function sendVoiceText(conv,text,route,marker){
+  const here=conv===S.conv;
+  const current=here ? modelRequestSnapshot() : route;
+  if(current.expected_model!==route.expected_model || current.engine_segment!==route.engine_segment){
+    retainUnsentText(conv,text,"模型已变化，消息未发送。"); return;
+  }
+  const realConv=permConvId(conv), requestId=newClientRequestId();
+  const payload={conv:realConv,text,...convOwnership(conv),...route,client_request_id:requestId,
+    ...(marker ? {agy_trial_model:marker} : {})};
+  S.sendAcks[requestId]=false;
+  try{
+    const response=await api("/send",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)});
+    if(!response.ok){
+      const detail=await response.json().catch(()=>({}));
+      if(response.status<500 || !await waitForSendAck(requestId)){
+        retainUnsentText(conv,text,detail.error || "消息未发送。"); return;
+      }
+    }
+  }catch(error){
+    if(!await waitForSendAck(requestId)){
+      retainUnsentText(conv,text,"无法确认消息是否送达，请先核对聊天记录。"); return;
+    }
+  }finally{ delete S.sendAcks[requestId]; }
+  if(realConv!==conv){
+    if(conv===S.conv) saveComposerAttachments(conv);
+    saveDraft(realConv,readDraft(conv));
+    S.composerAttachments[realConv]=S.composerAttachments[conv];
+    navRetag(conv,realConv);
+    const c=S.convs.find(x=>x.conv===conv); if(c){ c.conv=realConv; c.draft=false; }
+    if(conv===S.conv) await openConv(realConv);
+  }
+  loadConvs();
 }
 // 转写没识别到内容/失败:占位气泡改成提示+按钮,绝不把空内容误发给 Claude。
 // 保留这次录到的 blob——"重试"直接重发同一份音频(网络/服务抖动场景不用再开口);

@@ -330,9 +330,8 @@ async def _converse(
     )
     if task and task.get("cwd"):
         root = task["cwd"]
-    agy_locked = session_store.agy_native_session(session_key) is not None
     agy_model = model if agy_trial.is_trial_model(model) else None
-    if agy_locked or agy_trial.is_native_model(agy_model):
+    if agy_trial.is_native_model(agy_model):
         cwd = None  # 原生纯文本会话在独立目录，不为这一轮准备项目副本
     elif cwd_override is not None:
         cwd = cwd_override
@@ -340,7 +339,7 @@ async def _converse(
         # Git 项目必须先拿到独立 worktree。创建失败就中止本轮,不能把 Agent 放回主检出目录。
         cwd = await worktree.execution_cwd(session_key)
     cwd_token = danger.set_cwd(cwd, project_root=root)  # 随 contextvar 传进审批闸,使「写 cwd 外文件」规则生效
-    agy_path = bool(agy_model or agy_locked)
+    agy_path = bool(agy_model)
     stored_user = store_user if store_user is not None else user_text
     if agy_path:
         stored_user = danger.redact_secrets(stored_user)
@@ -395,8 +394,6 @@ async def _converse(
                 refusal = "Antigravity 试用只支持在网页手动发送当前文字。"
             elif danger.redact_secrets(user_text) != user_text:
                 refusal = "这段文字可能含凭据，未发送给 Antigravity。"
-            if agy_locked and not agy_trial.is_native_model(agy_model):
-                refusal = "此会话已锁定 Antigravity，请选择 Antigravity 模型。"
             if agy_trial.is_native_model(agy_model):
                 stream = agy_trial.stream_native(session_key, turn_id, agy_model, user_text, refusal)
             else:
@@ -424,7 +421,7 @@ async def _converse(
         partial = danger.redact_secrets(shared.draft).strip()
         persisted = session_store.finish_turn(
             turn_id, partial or "(上一条回复已被取消)", events=timeline.blocks,
-            session_key=session_key,
+            session_key=session_key, failed=True,
         )
         # 会话已被删除时,旧请求的 turn id 可能已被新会话复用。归属校验失败即停止:
         # 不能重建 session_meta,也不能再向客户端推被删会话的终态事件。
@@ -480,7 +477,7 @@ async def _converse(
         reply.text = danger.redact_secrets(reply.text)
         shared.flush_draft()
         persisted = session_store.finish_turn(
-            turn_id, reply.text, events=timeline.blocks, session_key=session_key
+            turn_id, reply.text, events=timeline.blocks, session_key=session_key, failed=reply.is_error,
         )
         # 删除会话会删掉这轮的行;后续旧流即使拿着被 SQLite 复用的 id 也必须止步，
         # 不得借 set_last_error / usage / sink.done 把已删除会话重新建回来。
@@ -586,8 +583,8 @@ def handle_command(text: str, session_key: str, current_model: str) -> CommandOu
     cmd, _, arg = text.partition(" ")
     cmd, arg = cmd.lower(), arg.strip()
 
-    if cmd in ("/model", "/new", "/clear", "/reset", "/compact") and session_store.agy_native_session(session_key):
-        return CommandOutcome(reply="此会话由 Antigravity 管理，请用网页模型面板切换同组模型；其他模型请另开新会话。")
+    if cmd in ("/model", "/new", "/clear", "/reset", "/compact") and (current_model or "").startswith("agy-native:"):
+        return CommandOutcome(reply="当前使用 Antigravity。请用网页模型面板切换模型；跨通道时可选择是否带上最近文字。")
     if cmd in ("/exit", "/quit"):
         return CommandOutcome(reply="再见。", exit=True)
     if cmd in ("/new", "/reset"):

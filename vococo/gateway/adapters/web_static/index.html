@@ -476,6 +476,15 @@ try{
       <button id="clearVoiceCtxBtn" type="button" title="新聊天" aria-label="新聊天"></button>
       <button id="tasksBtn" title="任务"><span id="tasksIcon"></span><span id="tasksBadge"></span></button>
     </header>
+    <dialog id="modelHandoffDialog" class="chat-history-dialog" aria-labelledby="modelHandoffTitle">
+      <div class="chat-history-head"><strong id="modelHandoffTitle">切换模型通道</strong></div>
+      <p>聊天记录仍保留。选择是否把最多 6 轮近期聊天的文字片段交给新通道；不发送附件或工具记录。</p>
+      <form method="dialog" class="chat-history-list">
+        <button value="recent">带上最近对话文字</button>
+        <button value="fresh">从下一条消息开始</button>
+        <button value="cancel" autofocus>取消</button>
+      </form>
+    </dialog>
     <dialog id="chatHistoryDialog" class="chat-history-dialog" aria-labelledby="chatHistoryTitle">
       <div class="chat-history-head"><strong id="chatHistoryTitle">最近聊天</strong><button id="chatHistoryClose" type="button" aria-label="关闭">×</button></div>
       <div id="chatHistoryList" class="chat-history-list"></div>
@@ -773,7 +782,7 @@ async function reloadSavedModels(conv){
 }
 function restoreSessionModels(){
   const conv=permConvId(S.conv), cached=sessionModels.get(conv);
-  S.models=cached || {...S.models, _conv:conv, chosen_model:"", efforts:{}, service_tiers:{}};
+  S.models=cached || {...S.models, _conv:conv, chosen_model:"", engine_segment:null, efforts:{}, service_tiers:{}};
   $("#effortPop").hidden=true;
   $("#modelPop").hidden=true;
   setModel(S.models.chosen_model||"");
@@ -1115,7 +1124,8 @@ function curModel(){
 function setModel(id){ S.model=id||""; renderModelChip(); renderEffortChip(); }
 function renderModelChip(){
   const copy=typeof agyCopyActive==="function" && agyCopyActive();
-  $("#modelName").textContent=copy ? "Antigravity CLI" : modelShort(curModel());
+  const model=curModel();
+  $("#modelName").textContent=copy ? "Antigravity CLI" : modelShort(model)+(model.startsWith("agy-native:") ? " · AGY" : "");
   if(typeof updateSendBtn==="function") updateSendBtn();
 }
 async function selectAgyHandoff(){
@@ -1233,7 +1243,15 @@ function showUsageTip(ring){
   usageTipEl.style.top = top + "px";
 }
 function hideUsageTip(){ if(usageTipEl) usageTipEl.style.display = "none"; }
-function pickModel(id){
+var modelSwitching = new Set();
+function isModelSwitching(conv=S.conv){ return !!modelSwitching?.has(permConvId(conv)); }
+function chooseModelHandoff(){
+  const dialog=$("#modelHandoffDialog");
+  dialog.returnValue="cancel";
+  dialog.showModal();
+  return new Promise(resolve=>dialog.addEventListener("close",()=>resolve(dialog.returnValue),{once:true}));
+}
+async function pickModel(id){
   $("#modelPop").hidden=true;
   hideUsageTip();
   if(!id) return;
@@ -1244,21 +1262,42 @@ function pickModel(id){
   if(agyCopyActive()){
     S.agyHandoff=null; renderModelChip(); renderEffortChip();
   }
-  if(id===curModel()) return;
-  const conv=permConvId(S.conv), saved=S.models, old=curModel();
-  ++modelsLoadSeq;
-  setModel(id);
-  saved.chosen_model=id;
-  api("/model", {method:"POST", headers:{"Content-Type":"application/json"},
-    body:JSON.stringify({conv:conv, model:id})})
-    .then(async r=>{
-      if(!r.ok) throw new Error("model switch failed");
-      const meta=await r.json();
-      if(!/^agy-(trial|native):/.test(id)) saved.default=id;
-      if(saved.chosen_model===id) updateUsageMeta({...meta, conv});
-      await reloadSavedModels(conv);
-    })
-    .catch(()=>{ saved.chosen_model=old; if(conv===permConvId(S.conv)) setModel(old); });
+  if(id===curModel() || isModelSwitching()) return;
+  const origin=S.conv, conv=permConvId(origin), old=curModel(), segment=S.models.engine_segment ?? null;
+  if(S.sending[origin] || S.pendingSending?.[origin] || S.voiceRec?.[origin]){
+    window.alert("消息正在发送，请稍后再切换模型。"); return;
+  }
+  const changeModel=async handoff=>{
+    const response=await api("/model", {method:"POST", headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({conv, model:id, previous_model:old || undefined, engine_segment:segment, handoff})});
+    const data=await response.json();
+    return {response,data};
+  };
+  modelSwitching.add(conv);
+  updateSendBtn();
+  try{
+    let {response,data}=await changeModel();
+    if(data.code==="handoff_required" && permConvId(S.conv)===conv){
+      const handoff=await chooseModelHandoff();
+      if(handoff==="cancel" || permConvId(S.conv)!==conv) return;
+      ({response,data}=await changeModel(handoff));
+    }
+    if(!response.ok) throw new Error(data.error || "模型切换失败");
+    for(const item of (S.pending[origin]||[])){
+      item.error="模型已切换，可按当前模型重试"; item.modelMismatch=true;
+    }
+    if(permConvId(S.conv)===conv){
+      const selected=data.chosen_model || id;
+      S.models.chosen_model=selected; S.models.engine_segment=data.engine_segment ?? null; setModel(selected);
+      updateUsageMeta({...data,conv}); drawPending();
+    }
+  }catch(error){
+    if(permConvId(S.conv)===conv) window.alert(error.message || "模型切换失败");
+  }finally{
+    modelSwitching.delete(conv);
+    if(permConvId(S.conv)===conv){ ++modelsLoadSeq; updateSendBtn(); }
+    await reloadSavedModels(conv);
+  }
 }
 $("#modelBtn").onclick=e=>{ e.stopPropagation(); const p=$("#modelPop");
   if(p.hidden){ closeComposerPopovers(p); renderModelPop(); p.hidden=false; } else { p.hidden=true; hideUsageTip(); } };

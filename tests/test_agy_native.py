@@ -31,7 +31,7 @@ NATIVE_ID = "3596d05e-5d0e-47a7-b5a8-77aee32011d2"
 
 
 @pytest.mark.anyio
-async def test_web_native_locks_only_after_success(isolated, monkeypatch):
+async def test_web_native_binding_only_after_success(isolated, monkeypatch):
     monkeypatch.setattr(config, "WEB_AUTH_TOKEN", "test-web")
     monkeypatch.setattr(settings_store, "_PATH", isolated / "settings.json")
     monkeypatch.setattr(agy_trial, "cli_binary", lambda: Path("/bin/sh"))
@@ -98,6 +98,10 @@ async def test_web_native_locks_only_after_success(isolated, monkeypatch):
     monkeypatch.setattr(agy_handoff, "prepare_into", prepare_into)
     monkeypatch.setattr(agy_acp, "stream_turn", stream_turn)
     adapter = WebAdapter()
+    async def no_server():
+        pass
+
+    monkeypatch.setattr(adapter, "_start_server", no_server)
     runner = GatewayRunner([adapter])
     app = web.Application()
     app.add_routes([web.get("/models", adapter._handle_models), web.post("/model", adapter._handle_model_switch),
@@ -105,17 +109,17 @@ async def test_web_native_locks_only_after_success(isolated, monkeypatch):
     conv = "session:" + uuid.uuid4().hex
 
     async with TestClient(TestServer(app), headers={"X-Auth-Token": "test-web"}) as client:
-        async def choose(model):
-            return await client.post("/model", json={"conv": conv, "model": model})
+        async def choose(model, **extra):
+            return await client.post("/model", json={"conv": conv, "model": model, **extra})
 
         async def send(text, model):
             resp = await client.post("/send", json={"conv": conv, "agent_id": "general", "text": text,
                                                     "agy_trial_model": model})
             assert resp.status == 200, await resp.text()
-            await runner._handle(adapter, adapter._inbox.get_nowait())
+            await runner._handle(adapter, await anext(adapter.receive()))
 
         before = await (await client.get("/models", params={"conv": conv})).json()
-        assert not before["agy_native_locked"] and any(item[2] == "agy-native" for item in before["choices"])
+        assert any(item[2] == "agy-native" for item in before["choices"])
         assert before["efforts"][HIGH]["value"] == "high"
         assert [level[0] for level in before["efforts"][HIGH]["levels"]] == ["low", "medium", "high", "xhigh"]
         effort_resp = await client.post("/effort", json={"conv": conv, "model": HIGH, "effort": "xhigh"})
@@ -144,8 +148,8 @@ async def test_web_native_locks_only_after_success(isolated, monkeypatch):
         assert session_store.agy_native_session(conv) is None
         assert "Antigravity 的工具调用被拒绝" in str(session_store.load_recent(conv))
         assert "用户消息：" not in str(session_store.load_recent(conv))
-        assert (await choose("deepseek-flash")).status == 200
-        assert (await choose(HIGH)).status == 200
+        assert (await choose("deepseek-flash", handoff="fresh")).status == 200
+        assert (await choose(HIGH, handoff="fresh")).status == 200
         await send("first success", HIGH)
         lock = session_store.agy_native_session(conv)
         assert lock["id"] == NATIVE_ID
@@ -163,9 +167,131 @@ async def test_web_native_locks_only_after_success(isolated, monkeypatch):
             assert "测试通过" in str(session_store.load_recent(conv)[-1])
         assert len(called) == 7
         locked = await (await client.get("/models", params={"conv": conv})).json()
-        assert locked["agy_native_locked"] and not locked["agy_handoff"]
-        assert {x[0] for x in locked["choices"]} == {HIGH, LOW}
+        assert not locked["agy_handoff"]
+        assert {HIGH, LOW} <= {x[0] for x in locked["choices"]}
+        assert any(group != "agy-native" for _, _, group in locked["choices"])
         assert locked["default"] == "deepseek-flash"
+
+
+@pytest.mark.anyio
+async def test_cross_engine_switch_is_reversible_and_handoff_is_opt_in(isolated, monkeypatch):
+    from vococo.core import worktree
+    from vococo.core.agent import AgentReply, Done
+    from vococo.gateway import web_bridge
+
+    monkeypatch.setattr(config, "WEB_AUTH_TOKEN", "test-web")
+    monkeypatch.setattr(settings_store, "_PATH", isolated / "settings.json")
+    monkeypatch.setattr(agy_trial, "cli_binary", lambda: Path("/bin/sh"))
+    monkeypatch.setattr(agy_trial, "enabled", lambda: True)
+    settings_store.set_web_default_model("deepseek-flash")
+    acp, sdk = [], []
+    conv = "session:" + uuid.uuid4().hex
+    workspace = isolated / "workspaces" / "agy-handoff" / "session-test"
+    workspace.mkdir(parents=True)
+    meta = {"agent_id": "general", "workspace": str(workspace)}
+
+    async def spec():
+        return native_spec_for((HIGH, LOW))
+
+    async def no_mcp():
+        return None
+
+    async def acp_turn(cwd, timeout, model, prompt, *, session_id=None, **kwargs):
+        acp.append((prompt, session_id))
+        yield "session", session_id or str(uuid.uuid4())
+        yield "delta", "AGY_RESULT"
+
+    async def normal_turn(history, prompt, *, resume, model, **kwargs):
+        sdk.append((model, history, resume))
+        yield Done(AgentReply("NORMAL_RESULT", [], "new-sdk", False))
+
+    async def cwd(key):
+        return str(isolated)
+
+    async def no_title(*args):
+        pass
+
+    monkeypatch.setattr(agy_trial, "native_spec", spec)
+    monkeypatch.setattr(agy_trial, "_vococo_mcp_bundle", no_mcp)
+    monkeypatch.setattr(agy_handoff, "prepare", lambda *_: meta)
+    monkeypatch.setattr(agy_handoff, "prepare_into", lambda *_: meta)
+    monkeypatch.setattr(agy_acp, "stream_turn", acp_turn)
+    monkeypatch.setattr(worktree, "execution_cwd", cwd)
+    monkeypatch.setattr(core, "stream_turn", normal_turn)
+    adapter = WebAdapter()
+    monkeypatch.setattr(adapter, "_summarize_title", no_title)
+    async def no_server():
+        pass
+
+    monkeypatch.setattr(adapter, "_start_server", no_server)
+    runner = GatewayRunner([adapter])
+    adapter.set_model_switch_callback(runner.update_model_cache)
+    monkeypatch.setattr(web_bridge, "session_busy", runner.session_busy)
+    app = web.Application()
+    app.add_routes([web.post("/model", adapter._handle_model_switch), web.post("/send", adapter._handle_send),
+                    web.post("/turn/regenerate", adapter._handle_turn_regenerate)])
+    # 先走普通通道，然后模拟另外两轮含附件和合成凭据的历史。
+    session_store.set_chosen_model(conv, "claude-sonnet-5")
+    session_store.append(conv, "SYNTHETIC SONNET\n\nhttps://example.com/library-only", "SONNET_CONTEXT")
+    failed = session_store.start_turn(conv, "FAILED_QUERY")
+    session_store.finish_turn(failed, "FAILED_RESULT", session_key=conv, failed=True)
+    session_store.append_external(conv, "OLD_EXTERNAL_RESULT", "synthetic-old-result")
+    assert session_store.external_context_state(conv, None)[1]
+    media = session_store.start_turn(conv, "ATTACHMENT_MARKER")
+    session_store.finish_turn(media, "附图内容", session_key=conv)
+    session_store._conn().execute("UPDATE turns SET images=? WHERE id=?", ('["mock.png"]', media))
+    session_store.append(conv, "Authorization: Bearer synthetic_unknown_value", "SECRET_ROW")
+
+    async with TestClient(TestServer(app), headers={"X-Auth-Token": "test-web"}) as client:
+        async def choose(model, **params):
+            return await client.post("/model", json={"conv": conv, "model": model, **params})
+
+        async def send(text, marker="", **params):
+            return await client.post("/send", json={"conv": conv, "agent_id": "general", "text": text,
+                                                    "agy_trial_model": marker, **params})
+
+        required = await choose(HIGH)
+        assert required.status == 409 and (await required.json())["code"] == "handoff_required"
+        assert (await choose(HIGH, handoff="recent", previous_model="claude-sonnet-5")).status == 200
+        stale = await send("纯文字但无标记")
+        assert stale.status == 409 and (await stale.json())["code"] == "model_mismatch"
+        attachment = await send("附带引用", HIGH, library_refs=["dummy"])
+        assert attachment.status == 400 and "附件" in (await attachment.json())["error"]
+        assert (await send("第一次 AGY", HIGH)).status == 200
+        assert (await choose("gpt-6.2-sol", handoff="recent")).status == 409  # 已入队但尚未开始
+        await runner._handle(adapter, await anext(adapter.receive()))
+        first_agy = session_store.agy_native_session(conv)
+        assert first_agy and "SONNET_CONTEXT" in acp[0][0]
+        assert not any(marker in acp[0][0] for marker in (
+            "SECRET_ROW", "ATTACHMENT_MARKER", "FAILED_QUERY", "FAILED_RESULT", "library-only", "OLD_EXTERNAL_RESULT",
+        ))
+        assert (await choose("gpt-6.2-sol", handoff="recent", previous_model=LOW)).status == 409
+        ack = await choose("gpt-6.2-sol", handoff="recent")
+        assert ack.status == 200
+        first_gpt_segment = (await ack.json())["engine_segment"]
+        crossed = await client.post("/turn/regenerate", json={"conv": conv, "id": session_store.engine_context(conv)["cutoff"]})
+        assert crossed.status == 409
+        assert session_store.agy_native_session(conv) == first_agy
+        assert (await send("现在 GPT", HIGH)).status == 409
+        assert (await send("现在 GPT")).status == 200
+        await runner._handle(adapter, await anext(adapter.receive()))
+        assert sdk[-1][0] == "gpt-6.2-sol" and sdk[-1][2] is None
+        assert any(turn.assistant == "AGY_RESULT" for turn in sdk[-1][1])
+        assert (await choose(LOW, handoff="fresh")).status == 200
+        assert (await send("从新开始 AGY", LOW)).status == 200
+        await runner._handle(adapter, await anext(adapter.receive()))
+        assert acp[-1][1] is None and "NORMAL_RESULT" not in acp[-1][0]
+        assert session_store.agy_native_session(conv)["id"] != first_agy["id"]
+        assert (await choose("gpt-6.2-sol", handoff="recent")).status == 200
+        old_tab = await send("旧标签页稿件", expected_model="gpt-6.2-sol", engine_segment=first_gpt_segment)
+        assert old_tab.status == 409 and (await old_tab.json())["code"] == "model_mismatch"
+        assert (await send("再回 GPT")).status == 200
+        await runner._handle(adapter, await anext(adapter.receive()))
+        assert [turn.assistant for turn in sdk[-1][1]] == ["AGY_RESULT"]
+        assert len(session_store.load_history(conv)) == 9
+        assert session_store.external_context_state(conv, None)[1] == []
+        assert (await choose("claude-sonnet-5")).status == 200
+        assert settings_store.get_web_default_model() == "deepseek-flash"
 
 
 @pytest.mark.anyio

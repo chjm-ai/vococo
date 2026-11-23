@@ -256,7 +256,8 @@ class GatewayRunner:
                         # 先冻结所有老会话已经在用的模型,再改全局默认——顺序不能反,
                         # 否则中间有窗口期:老会话下一轮读到的已经是改完的新默认。
                         session_store.backfill_chosen_models()
-                        settings_store.set_web_default_model(outcome.new_model)
+                        if not session_store.engine_context(key) and not session_store.agy_native_session(key):
+                            settings_store.set_web_default_model(outcome.new_model)
                 if outcome.choice is not None:
                     await adapter.present_choice(inc.chat_id, outcome.choice)
                     # 持久化选择文本,刷新页面不丢(仅 SSE 推的一次性事件,不进 DB 就会空白)

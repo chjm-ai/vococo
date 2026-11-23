@@ -612,6 +612,10 @@ class SessionClosingError(RuntimeError):
     pass
 
 
+class ModelChangedError(RuntimeError):
+    pass
+
+
 class WebAdapter:
     platform = "web"
 
@@ -1249,12 +1253,19 @@ class WebAdapter:
             await check_open()
             key = config.resolve_session_key("web", conv)
             selected = session_store.get_chosen_model(key)
+            segment = session_store.engine_context(key).get("segment")
+            effective = selected or settings_store.get_web_default_model() or config.MODEL
+            if (body.get("expected_model", effective) != effective
+                    or body.get("engine_segment", segment) != segment):
+                raise ModelChangedError
             expected = body.get("agy_trial_model", "")
             command = is_command(str(body.get("text") or "").strip())
             native_involved = (agy_trial.is_native_model(selected)
                                or (isinstance(expected, str) and agy_trial.is_native_model(expected)))
             if native_involved:
                 spec = await agy_trial.native_spec()
+                if session_store.get_chosen_model(key) != selected:
+                    raise ModelChangedError
                 for value_name in ("selected", "expected"):
                     value = selected if value_name == "selected" else expected
                     if not isinstance(value, str) or not agy_trial.is_native_model(value):
@@ -1275,12 +1286,11 @@ class WebAdapter:
                             session_store.set_model_preferences(key, norm_id, {"effort": suffix})
                         expected = norm_id
             trial_model = selected if agy_trial.is_trial_model(selected) else ""
-            if not command and session_store.agy_native_session(key) and not agy_trial.is_native_model(selected):
-                return web.json_response({"error": "会话已锁定 Antigravity，请选 Antigravity 模型"}, status=409)
             manual_only = (agy_trial.is_native_model(trial_model)
                            or (isinstance(expected, str) and agy_trial.is_native_model(expected)) or not command)
             if expected != trial_model and manual_only:
-                return web.json_response({"error": "Antigravity 只接受手动文字；若模型已变化，请核对后重试"}, status=409)
+                logging.getLogger(__name__).info("网页发送模型不同步: session=%s marker_present=%s", key, bool(expected))
+                return web.json_response({"code": "model_mismatch", "error": "模型未同步，消息未发送。请确认模型后重试。"}, status=409)
             if trial_model and manual_only:
                 from ...tools import danger
 
@@ -1290,16 +1300,27 @@ class WebAdapter:
                 if not agy_trial.enabled() or not agy_trial.accepts_session(key):
                     return web.json_response({"error": "这个会话的 Antigravity 试用不可用，请切换模型"}, status=400)
                 if any(body.get(field) for field in ("images", "audios", "files", "videos", "library_refs")):
-                    return web.json_response({"error": "Antigravity 试用仅接受当前文字，不支持附件或作品引用"}, status=400)
-            message = await self._prepare_message(request, body, before_accept=check_open)
+                    return web.json_response({"error": "Antigravity 暂不支持附件或作品引用。请移除它们，或切换到普通模型。"}, status=400)
+
+            async def check_model():
+                await check_open()
+                if (session_store.get_chosen_model(key) != selected
+                        or session_store.engine_context(key).get("segment") != segment):
+                    raise ModelChangedError
+
+            await check_model()
+            message = await self._prepare_message(request, body, before_accept=check_model)
             if isinstance(message, web.Response):
                 return message
+            await check_model()
             await self._ingest(
                 conv, message.text, images=message.images, audios=message.audios,
                 files=message.files, videos=message.videos,
                 client_request_id=str(body.get("client_request_id") or ""), ownership=ownership,
                 agy_trial_model=trial_model if expected == trial_model else "",
             )
+        except ModelChangedError:
+            return web.json_response({"code": "model_mismatch", "error": "模型已变化，消息未发送。请确认模型后重试。"}, status=409)
         except SessionClosingError:
             return web.json_response({"error": "会话正在删除或已删除"}, status=409)
         return web.json_response({"ok": True})
@@ -1506,18 +1527,34 @@ class WebAdapter:
         elif trial and (model not in agy_trial.CHOICES or not agy_trial.enabled()
                         or not agy_trial.accepts_session(session_key)):
             return web.json_response({"error": "Antigravity 试用不可用"}, status=400)
-        if agy_trial.native_pending(session_key):
-            return web.json_response({"error": "Antigravity 正在回复，请等本轮结束再切换"}, status=409)
-        if session_store.agy_native_session(session_key) and not native:
-            return web.json_response({"error": "此会话已锁定 Antigravity；其他模型请另开新会话"}, status=409)
+        from .. import web_bridge
+
+        current = session_store.get_chosen_model(session_key) or settings_store.get_web_default_model() or config.MODEL
+        old_context = session_store.engine_context(session_key)
+        if (body.get("previous_model", current) != current
+                or body.get("engine_segment", old_context.get("segment")) != old_context.get("segment")):
+            return web.json_response({"code": "model_mismatch", "error": "模型已在另一处变化，请重新选择。"}, status=409)
+        if (current != model and (native or agy_trial.is_native_model(current))
+                and (agy_trial.native_pending(session_key) or self.has_queued(session_key)
+                     or web_bridge.session_busy(session_key))):
+            return web.json_response({"error": "会话正在回复或有消息待发送，请等本轮结束再切换。"}, status=409)
+        crossing = agy_trial.is_native_model(current) != native
+        handoff = body.get("handoff") if crossing else ""
+        if crossing and handoff not in ("recent", "fresh"):
+            if session_store.session_summary(session_key)["turns"]:
+                return web.json_response({"code": "handoff_required", "error": "请先选择是否带上最近对话。"}, status=409)
+            handoff = "fresh"
+        if self.session_closing(session_key):
+            return web.json_response({"error": "会话正在删除或已删除"}, status=409)
         session_store.backfill_chosen_models()  # 冻结老会话
-        session_store.set_chosen_model(session_key, model)
-        if not trial:
+        session_store.set_chosen_model(session_key, model, handoff=handoff)
+        if not trial and not crossing and not old_context and not session_store.agy_native_session(session_key):
             settings_store.set_web_default_model(model)
         # 同步更新 GatewayRunner 的内存缓存,否则下一条消息还会用旧模型
         if self._model_switch_callback:
             self._model_switch_callback(session_key, model)
-        return web.json_response({"ok": True, **session_store.session_summary(session_key)})
+        return web.json_response({"ok": True, **session_store.session_summary(session_key),
+                                  "engine_segment": session_store.engine_context(session_key).get("segment")})
 
     async def _summarize_title(
         self, conv: str, session_key: str, text: str, placeholder: str
@@ -2315,9 +2352,6 @@ class WebAdapter:
         handoff = self._agy_handoff_available(key)
         spec = await agy_trial.native_spec() if self._agy_native_available(key) else {"models": {}}
         native_choices = {mid: meta["label"] for mid, meta in spec["models"].items()}
-        native_locked = bool(key and session_store.agy_native_session(key))
-        if native_locked:
-            choices = []
         choices.extend((mid, label, "agy-native") for mid, label in native_choices.items())
         chosen = session_store.get_chosen_model(key) if key else ""
         if key and not chosen:
@@ -2363,8 +2397,8 @@ class WebAdapter:
                 "effort": efforts.get(chosen or active_model, {}).get("value", ""),
                 "efforts": efforts,
                 "service_tiers": tiers,
-                "agy_handoff": handoff and not native_locked,
-                "agy_native_locked": native_locked,
+                "agy_handoff": handoff and not agy_trial.is_native_model(chosen),
+                "engine_segment": session_store.engine_context(key).get("segment") if key else None,
                 "choices": [[v, label, group] for v, label, group in choices],
             }
         )
@@ -2851,14 +2885,17 @@ class WebAdapter:
         if not conv:
             return web.json_response({"error": "missing conv"}, status=400)
         key = config.resolve_session_key("web", conv)
-        if agy_trial.is_trial_model(session_store.get_chosen_model(key)):
-            return web.json_response({"error": "Antigravity 试用不自动重发，请手动发送文字"}, status=409)
+        if (agy_trial.is_trial_model(session_store.get_chosen_model(key))
+                or turn_id <= session_store.engine_context(key).get("cutoff", 0)):
+            return web.json_response({"error": "此轮属于另一模型通道或使用了 Antigravity，不会自动重发。"}, status=409)
         user_text = session_store.delete_last_turn(key, turn_id)
         if user_text is None:
             return web.json_response(
                 {"ok": False, "error": "只能重新生成最新一条回复"}, status=409
             )
-        return web.json_response({"ok": True, "text": user_text})
+        model = session_store.get_chosen_model(key) or settings_store.get_web_default_model() or config.MODEL
+        return web.json_response({"ok": True, "text": user_text, "expected_model": model,
+                                  "engine_segment": session_store.engine_context(key).get("segment")})
 
     @_authed
     async def _handle_image(self, request: web.Request) -> web.StreamResponse:
