@@ -464,6 +464,16 @@ try{
     <button id="wbMultiDone" type="button" hidden>完成</button>
     <div id="wbMultiBar" hidden></div>
   </main>
+  <!-- 模型切换弹窗不隶属于某个视图，普通聊天时通话视图会被隐藏。 -->
+  <dialog id="modelHandoffDialog" class="chat-history-dialog" aria-labelledby="modelHandoffTitle">
+    <div class="chat-history-head"><strong id="modelHandoffTitle">切换模型通道</strong></div>
+    <p>聊天记录仍保留。选择是否把最多 6 轮近期聊天的文字片段交给新通道；不发送附件或工具记录。</p>
+    <form method="dialog" class="chat-history-list">
+      <button value="recent">带上最近对话文字</button>
+      <button value="fresh">从下一条消息开始</button>
+      <button value="cancel" autofocus>取消</button>
+    </form>
+  </dialog>
   <!-- 通话视图:语音通话(原独立 /voice 页,2026-07-09 并入主 SPA,见 00-overview.md
        §2 隔离约束的修订说明)。跟 #chatMain 互斥显隐,左上角复用同一套侧栏展开逻辑,
        原地叠加不打断通话——这正是要合并的原因。 -->
@@ -476,15 +486,6 @@ try{
       <button id="clearVoiceCtxBtn" type="button" title="新聊天" aria-label="新聊天"></button>
       <button id="tasksBtn" title="任务"><span id="tasksIcon"></span><span id="tasksBadge"></span></button>
     </header>
-    <dialog id="modelHandoffDialog" class="chat-history-dialog" aria-labelledby="modelHandoffTitle">
-      <div class="chat-history-head"><strong id="modelHandoffTitle">切换模型通道</strong></div>
-      <p>聊天记录仍保留。选择是否把最多 6 轮近期聊天的文字片段交给新通道；不发送附件或工具记录。</p>
-      <form method="dialog" class="chat-history-list">
-        <button value="recent">带上最近对话文字</button>
-        <button value="fresh">从下一条消息开始</button>
-        <button value="cancel" autofocus>取消</button>
-      </form>
-    </dialog>
     <dialog id="chatHistoryDialog" class="chat-history-dialog" aria-labelledby="chatHistoryTitle">
       <div class="chat-history-head"><strong id="chatHistoryTitle">最近聊天</strong><button id="chatHistoryClose" type="button" aria-label="关闭">×</button></div>
       <div id="chatHistoryList" class="chat-history-list"></div>
