@@ -19,6 +19,7 @@ import asyncio
 import os
 import contextvars
 from contextlib import asynccontextmanager
+from dataclasses import dataclass
 
 import anyio
 import re
@@ -27,7 +28,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from .. import config, providers
-from ..memory import session_store
+from ..memory import agents, notices, session_store
 from ..tools import danger
 from . import delegation, research, task_events, tasks, worktree
 from .repository_locks import checkout_lease, session_lease
@@ -194,19 +195,51 @@ async def _start_one(task: dict, turn_text: str | None = None, *, fresh: bool = 
     return True
 
 
-def start_claimed(task: dict, turn_text: str) -> None:
+@dataclass
+class ApprovalRetry:
+    notice_id: str
+    model: str
+    source_access: dict
+    operation_key: str = ""
+    resume: str = ""
+    source_turn_id: int | None = None
+    settled: bool = False
+
+    def finish(self, status: str) -> None:
+        if not self.settled:
+            notices.set_status(self.notice_id, status, expected="replaying")
+            self.settled = True
+
+
+def can_start_approval_retry(task: dict) -> bool:
+    return task.get("kind") != "research" and _owner_available(task)
+
+
+def start_approval_retry(task: dict, retry: ApprovalRetry) -> None:
+    note = "已提交审批续跑" if retry.resume else "已确认用当前模型重新执行未完成事项"
+    try:
+        start_claimed(task, f"{agents.SYS_MARKER} {note}", approval_retry=retry)
+    except Exception:
+        retry.finish("verify_required")
+        raise
+
+
+def start_claimed(task: dict, turn_text: str, *, approval_retry: ApprovalRetry | None = None) -> None:
     """启动已由调用方原子抢占为 running 的任务，启动失败时释放并发槽。"""
     task_id = task["id"]
     try:
+        session_store.set_conv_archived(tasks.session_key(task_id), False)
         _notify_activity(task_id)
-        _running[task_id] = _spawn(task_id, turn_text)
+        opts = {"approval_retry": approval_retry} if approval_retry else {}
+        _running[task_id] = _spawn(task_id, turn_text, **opts)
     except Exception:
         tasks.finish(task_id, "failed", "", "续接启动失败，未执行")
         _maybe_start_next()
         raise
 
 
-def _spawn(task_id: str, turn_text: str | None = None, *, fresh: bool = False) -> asyncio.Task:
+def _spawn(task_id: str, turn_text: str | None = None, *, fresh: bool = False,
+           approval_retry: ApprovalRetry | None = None) -> asyncio.Task:
     """起跑一轮任务,用【全新的】contextvars 上下文。
 
     asyncio.create_task 默认复制调用方的上下文:网页会话里调 dispatch_session 派出的任务,
@@ -216,10 +249,15 @@ def _spawn(task_id: str, turn_text: str | None = None, *, fresh: bool = False) -
     row = tasks.get(task_id)
     if row and row.get("kind") == "research":
         raise RuntimeError("原生深度研究已移除，历史研究只支持查看")
-    run = _run(task_id, turn_text, fresh=True) if fresh else _run(task_id, turn_text)
+    opts = {"fresh": True} if fresh else {}
+    if approval_retry:
+        opts["approval_retry"] = approval_retry
+    run = _run(task_id, turn_text, **opts)
     spawned = asyncio.create_task(run, context=contextvars.Context())
     spawned.add_done_callback(lambda finished: _ordinary_run_done(
         task_id, finished, followup=turn_text is not None and not fresh))
+    if approval_retry:
+        spawned.add_done_callback(lambda _: approval_retry.finish("verify_required"))
     return spawned
 
 
@@ -400,7 +438,8 @@ def _timeout_min(row: dict) -> int:
     return config.TASK_TIMEOUT_MIN
 
 
-async def _run(task_id: str, turn_text: str | None = None, *, fresh: bool = False) -> None:
+async def _run(task_id: str, turn_text: str | None = None, *, fresh: bool = False,
+               approval_retry: ApprovalRetry | None = None) -> None:
     key = tasks.session_key(task_id)
     row = tasks.get(task_id) or {}
     review_cwd = row.get("review_cwd") if row.get("execution_profile") == "review" else None
@@ -408,10 +447,27 @@ async def _run(task_id: str, turn_text: str | None = None, *, fresh: bool = Fals
         if review_cwd and not os.path.isdir(review_cwd):
             raise ValueError("待评审的工作树已不可用")
         if not session_store.is_deleted_web_session(key):
-            await _run_with_workspace(task_id, turn_text, fresh=fresh)
+            opts = {"approval_retry": approval_retry} if approval_retry else {}
+            await _run_with_workspace(task_id, turn_text, fresh=fresh, **opts)
 
 
-async def _run_with_workspace(task_id: str, turn_text: str | None, *, fresh: bool) -> None:
+def _approval_instruction(retry: ApprovalRetry, task: dict) -> str:
+    if retry.resume:
+        return ("主人补批了原轮等待的操作。只重试当时被拦截的那一步，先核对是否已经执行；"
+                "其余操作照常审批，不重复执行已完成事项。请实际核验结果并报告。")
+    return ("主人明确请求用当前模型重新执行原任务的未完成事项。此前的审批不再有效。"
+            "先核对草稿、已完成工作和外部回执；不要重复创建、发送或写入已经完成的内容。"
+            "如果不能确认某项外部操作是否已完成，先停下说明。"
+            f"\n\n原任务：\n{task['prompt']}")
+
+
+def _retry_matches(retry: ApprovalRetry, shared: SharedTurn, previous_turn: int | None) -> bool:
+    return (retry.model == (shared.chosen_model or config.MODEL)
+            and (not retry.resume or (retry.resume == shared.resume and retry.source_turn_id == previous_turn)))
+
+
+async def _run_with_workspace(task_id: str, turn_text: str | None, *, fresh: bool,
+                              approval_retry: ApprovalRetry | None = None) -> None:
     """跑一个任务的一轮对话。turn_text 为 None(首次派发)用 row['prompt'];
     非 None(追问/cron 再次触发)则是这一轮实际发给模型的文本——历史靠 resume 接,
     不用每次都把全部历史重新拼进 prompt(见 append())。"""
@@ -426,16 +482,17 @@ async def _run_with_workspace(task_id: str, turn_text: str | None, *, fresh: boo
     if not tasks.is_inline_research(row):
         session_store.set_conv_archived(session_key, False)
     prompt_text = turn_text if turn_text is not None else row["prompt"]
+    previous_turn = session_store.latest_turn_id(session_key) if approval_retry else None
     # 派发的这一轮对话也落进跟普通文字对话共用的 session_store(不只是 voice.db 里的
     # result_full 摘要)——这样任务完成后用户能在侧边栏"后台任务"分组里看到完整对话,
     # 并且能继续用文字追问(续聊直接走 web 发消息路径的 converse(),见 web.py)。
-    turn_id = session_store.start_turn(
-        session_key, prompt_text, source_access=tasks.automatic_access(row))
+    source_access = approval_retry.source_access if approval_retry else tasks.automatic_access(row)
+    turn_id = session_store.start_turn(session_key, prompt_text, source_access=source_access)
     from . import dispatch as dispatching
 
     execution_id = None
     if dispatching.enabled() and turn_id is not None:
-        execution_id = dispatching.begin(session_key, turn_id, tasks.automatic_access(row))
+        execution_id = dispatching.begin(session_key, turn_id, source_access)
     sdk_session_id: str | None = None
     chosen_at_start = ""
     # Git 项目任务必须在专属 worktree + 分支(vococo/<task_id>)执行;创建失败就让任务失败,
@@ -455,6 +512,13 @@ async def _run_with_workspace(task_id: str, turn_text: str | None, *, fresh: boo
     # 对齐——否则任务跑完侧边栏只看得到最后一句摘要,回溯不了 AI 到底做了什么。
     shared = SharedTurn(session_key, turn_id,
                         fresh=fresh or (row.get("origin") == "cron" and turn_text is None))
+    retry_matches = not approval_retry or _retry_matches(approval_retry, shared, previous_turn)
+    if approval_retry and not approval_retry.resume:
+        # 新 SDK 会话仍用原任务历史交接，但绝不复用旧 transcript 或许可。
+        shared.resume = None
+    replay = None
+    if approval_retry and approval_retry.resume and retry_matches and turn_id is not None:
+        replay = danger.ApprovalReplay(session_key, turn_id, approval_retry.operation_key)
     timeline = shared.timeline
     sink = None
     draft_text = ""
@@ -494,6 +558,9 @@ async def _run_with_workspace(task_id: str, turn_text: str | None, *, fresh: boo
     async def _drive() -> None:
         nonlocal result_text, last_progress_ts, error_note, sdk_session_id, used_tokens, tool_calls
         nonlocal chosen_at_start
+        if not retry_matches:
+            error_note = "任务的模型或历史已变化，未执行，请重新确认"
+            return
         if over_daily:
             error_note = over_daily
             return
@@ -514,17 +581,22 @@ async def _run_with_workspace(task_id: str, turn_text: str | None, *, fresh: boo
                     raise ValueError(refused)
 
         execution = {"token_budget": token_budget, "usage_callback": track_usage}
-        if turn_text is not None and tasks.automatic_access(row).get("remote_brain") is True:
+        if approval_retry:
+            execution["require_resume"] = bool(approval_retry.resume)
+        elif turn_text is not None and tasks.automatic_access(row).get("remote_brain") is True:
             execution["require_resume"] = True
+        instruction = _approval_instruction(approval_retry, row) if approval_retry else prompt_text
         async for ev in stream_run(
-            shared, prompt_text + _SUMMARY_TAG_INSTRUCTION, stream_fn=stream_turn, model=model, cwd=effective_cwd,
+            shared, instruction + _SUMMARY_TAG_INSTRUCTION, stream_fn=stream_turn, model=model, cwd=effective_cwd,
+            allow_precompact=not approval_retry,
             is_explicit_project=bool(row.get("cwd_explicit")), session_key=session_key,
             max_turns=config.TASK_MAX_TURNS, **execution,
         ):
             await _observe(ev)
 
     # 登记本轮属于哪个任务会话:审批闸据此把要批的操作推到 Web 任务会话、记审批记录/待批队列
-    task_session_token = danger.set_task_session(session_key)
+    task_session_token = danger.set_task_session(session_key, inherit_pending=not approval_retry)
+    replay_token = danger.approval_replay.set(replay) if replay else None
     from ..gateway import clarify
 
     source_token = None
@@ -532,7 +604,7 @@ async def _run_with_workspace(task_id: str, turn_text: str | None, *, fresh: boo
         sink = task_events.create_stream_sink(session_key)
         shared.sink = sink
         if turn_id is not None:
-            source_token = clarify.bind_turn(session_key, turn_id)
+            source_token = clarify.bind_turn(session_key, turn_id, model=shared.chosen_model or config.MODEL)
         effective_cwd = row.get("review_cwd") if row.get("execution_profile") == "review" else await worktree.execution_cwd_for_task(row["cwd"], task_id)
         cwd_token = danger.set_cwd(
             effective_cwd,
@@ -555,6 +627,8 @@ async def _run_with_workspace(task_id: str, turn_text: str | None, *, fresh: boo
             clarify.unbind_turn(session_key, turn_id, source_token)
         if cwd_token is not None:
             danger.reset_cwd(cwd_token)
+        if replay_token is not None:
+            danger.approval_replay.reset(replay_token)
         danger.reset_task_session(task_session_token)
         if used_tokens and _counts_daily(row):
             try:
@@ -604,6 +678,13 @@ async def _run_with_workspace(task_id: str, turn_text: str | None, *, fresh: boo
                 session_key=session_key,
             )
         ok = tasks.finish(task_id, "failed", result_text, _humanize_error(error_note) if error_note else "执行失败")
+    if approval_retry:
+        if approval_retry.resume and not (replay and replay.used):
+            approval_retry.finish("approved_unrun")
+        elif status == "done" and ok and (not replay or replay.succeeded):
+            approval_retry.finish("answered")
+        else:
+            approval_retry.finish("verify_required")
     if not ok:
         # 收尾写库被状态机拒绝 = 任务状态被别处改过(误标/竞态)。响亮记录,
         # 绝不静默吞掉——2026-07-12 事故里 finish('done') 被拒后无声无息,

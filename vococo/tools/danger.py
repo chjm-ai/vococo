@@ -15,12 +15,14 @@ fork 炸弹等),宁可漏放也别误伤日常操作——`rm -rf ./build` 这�
 from __future__ import annotations
 
 import contextvars
+import hashlib
 import json
 import os
 import re
 import shlex
 import tempfile
 import tomllib
+from dataclasses import dataclass
 from pathlib import Path
 
 from .. import config
@@ -1532,15 +1534,19 @@ _task_session_var: contextvars.ContextVar = contextvars.ContextVar(
 )
 
 
-def set_task_session(session_key: str | None) -> contextvars.Token:
+def set_task_session(session_key: str | None, *, inherit_pending: bool = True) -> contextvars.Token:
     """后台任务每跑一轮开头调用。顺带清掉该任务上一轮的「审批等超时」标记和
     「本轮任务都允许」——后者只管当前这一轮:定时任务每天复用同一个会话,不清的话
     一次授权会一直有效到进程重启,比按钮字面意思管得久。"""
     if session_key:
         _bg_timed_out.discard(session_key)
         _session_approvals.pop(session_key, None)
-        for cat in _next_round.pop(session_key, ()):  # 铃铛里补批的「本轮任务都允许」
-            _mark_session_approved(session_key, cat)
+        pending = _next_round.pop(session_key, ())
+        if inherit_pending:
+            for cat in pending:  # 旧补批的「本轮任务都允许」
+                _mark_session_approved(session_key, cat)
+        else:
+            _one_shot.pop(session_key, None)
     return _task_session_var.set(session_key or None)
 
 
@@ -1589,7 +1595,40 @@ _OPT_DENY = "拒绝"
 _OPT_ICONS = {_OPT_ONCE: "✅", _OPT_SESSION: "♾️", _OPT_TASK: "♾️", _OPT_FOREVER: "📌", _OPT_DENY: "🛑"}
 
 
-async def _approve_remote_brain(reason: str, detail: str, tool: str, done) -> bool | None:
+@dataclass
+class ApprovalReplay:
+    session_key: str
+    turn_id: int
+    operation_key: str
+    used: bool = False
+    succeeded: bool = False
+
+
+@dataclass
+class ApprovalReceipt:
+    replay: ApprovalReplay | None = None
+
+
+approval_replay: contextvars.ContextVar[ApprovalReplay | None] = contextvars.ContextVar(
+    "approval_replay", default=None,
+)
+
+
+def _take_replay(key: str, operation_key: str | None, receipt: ApprovalReceipt | None) -> bool:
+    from ..gateway import clarify
+
+    replay = approval_replay.get()
+    ctx = clarify.get_context()
+    if (receipt is None or replay is None or replay.used or not operation_key or not ctx
+            or (replay.session_key, replay.turn_id, replay.operation_key)
+            != (key, ctx.turn_id, operation_key) or ctx.session_key != key):
+        return False
+    replay.used = True
+    receipt.replay = replay
+    return True
+
+
+async def _approve_remote_brain(reason: str, detail: str, tool: str, done, operation_key, receipt) -> bool | None:
     """远程来源不能借用本机完全访问、永久规则或交互上下文。"""
     try:
         from ..core import tasks
@@ -1605,7 +1644,8 @@ async def _approve_remote_brain(reason: str, detail: str, tool: str, done) -> bo
         if not key:
             return done("remote_missing_session", False)
         # 不展示“永远允许”，只沿现有后台一次性/本轮审批链。
-        return await _approve_background(reason, detail, tool, None, key, done)
+        return await _approve_background(reason, detail, tool, None, key, done,
+                                         operation_key=operation_key, receipt=receipt, allow_legacy_grant=False)
     except Exception:
         return done("remote_check_error", False)
 
@@ -1617,6 +1657,8 @@ async def _approve(
     *,
     tool: str = "",
     rule: tuple[str, str, str] | None = None,
+    operation_key: str | None = None,
+    receipt: ApprovalReceipt | None = None,
 ) -> bool:
     """审批底座:有交互通道 → 弹「允许一次 / 本次会话都允许 / [永远允许] / 拒绝」并阻塞等。
 
@@ -1634,7 +1676,7 @@ async def _approve(
         _audit(tool, "escalate", reason, detail, decision)
         return ok
 
-    remote = await _approve_remote_brain(reason, detail, tool, done)
+    remote = await _approve_remote_brain(reason, detail, tool, done, operation_key, receipt)
     if remote is not None:
         return remote
 
@@ -1697,11 +1739,20 @@ async def _approve(
     return _apply_answer(answer, ctx.session_key, cat, session_opt, rule, done)
 
 
-def _notice(prompt: str, reason: str, detail: str, tool: str, rule) -> dict:
+def _notice(prompt: str, reason: str, detail: str, tool: str, rule, operation_key=None) -> dict:
     """审批弹窗对应的铃铛通知内容(见 memory/notices.py)。"""
+    from ..gateway import clarify
+    from ..memory import session_store
+
+    ctx = clarify.get_context()
+    resumable = bool(operation_key and ctx and ctx.model)
     return {
-        "kind": "approval", "prompt": prompt, "reason": reason,
+        "kind": "approval", "prompt": redact_secrets(prompt), "reason": reason,
         "detail": redact_secrets(detail), "tool": tool, "rule": rule,
+        "source_turn_id": ctx.turn_id if ctx else None,
+        "operation_key": operation_key,
+        "resume_model": ctx.model if resumable else None,
+        "resume_sdk": session_store.get_sdk_session_id(ctx.session_key) if resumable else None,
     }
 
 
@@ -1782,24 +1833,22 @@ def _in_quiet_hours(hour: int | None = None) -> bool:
     return start <= hour < end if start < end else (hour >= start or hour < end)
 
 
-def _record_deferred(session_key: str, prompt: str, tool: str, reason: str, detail: str, rule) -> None:
+def _record_deferred(session_key: str, prompt: str, tool: str, reason: str, detail: str, rule, operation_key=None) -> None:
     """不弹窗、直接以「已超时」记进铃铛(免打扰 / 没有 Web 通道 / 本轮已超时过)。"""
     try:
         from ..memory import notices
 
         choices = [_OPT_ONCE, _OPT_TASK] + ([_OPT_FOREVER] if rule else []) + [_OPT_DENY]
-        n = _notice(prompt, reason, detail, tool, rule)
-        notices.add(
-            session_key=session_key, kind="approval", prompt=n["prompt"], options=choices,
-            status="expired", reason=reason, detail=n["detail"], tool=tool, rule=rule,
-        )
+        notices.add(session_key=session_key, options=choices, status="expired",
+                    **_notice(prompt, reason, detail, tool, rule, operation_key))
     except Exception as exc:  # noqa: BLE001
         print(f"[danger] 写入铃铛失败:{exc}", flush=True)
 
 
-async def _approve_background(reason: str, detail: str, tool: str, rule, key: str, done) -> bool:
+async def _approve_background(reason: str, detail: str, tool: str, rule, key: str, done,
+                              *, operation_key=None, receipt=None, allow_legacy_grant=True) -> bool:
     cat = _category(reason)
-    if _take_one_shot(key, cat):
+    if _take_replay(key, operation_key, receipt) or (allow_legacy_grant and _take_one_shot(key, cat)):
         return done("approved_once", True)
     if _is_session_approved(key, cat):
         return done("session", True)
@@ -1811,12 +1860,12 @@ async def _approve_background(reason: str, detail: str, tool: str, rule, key: st
         prompt += f"\n\n📌 永远允许 = {rule[2]}"
     adapter = clarify.background_adapter()
     if adapter is None or _in_quiet_hours() or key in _bg_timed_out:
-        _record_deferred(key, prompt, tool, reason, detail, rule)
+        _record_deferred(key, prompt, tool, reason, detail, rule, operation_key)
         return done("deferred", False)
     choices = [_OPT_ONCE, _OPT_TASK] + ([_OPT_FOREVER] if rule else []) + [_OPT_DENY]
     wait_min = max(1, config.BG_APPROVAL_WAIT_SEC // 60)
     shown = prompt + f"\n\n({wait_min} 分钟内没回应就先跳过这一步,留在右上角铃铛里,之后补批会让任务接着跑)"
-    p = clarify.register(key, choices, notice=_notice(prompt, reason, detail, tool, rule))
+    p = clarify.register(key, choices, notice=_notice(prompt, reason, detail, tool, rule, operation_key))
     opts = _choice_opts(p.clarify_id, choices)
     try:
         await adapter.present_choice(key, Choice(prompt=shown, options=opts))
@@ -1841,11 +1890,15 @@ async def _ask_approval(
 
 
 async def require_approval(
-    reason: str, detail: str, *, restrict_noninteractive: bool = True
+    reason: str, detail: str, *, restrict_noninteractive: bool = True, immutable_tool: str = "",
+    receipt: ApprovalReceipt | None = None,
 ) -> bool:
     """供 MCP 工具(如 cron 启用/删除)复用的审批。默认非交互通道拒绝(持久化类操作
     不该在 cron 上下文里被 agent 静默改动)。不给「永远允许」。"""
-    return await _approve(reason, detail, restrict_noninteractive, tool="(内置工具)")
+    # 只有调用方能保证详情包含完整、不可变的待执行参数时，才允许补批复用。
+    operation_key = hashlib.sha256(f"{immutable_tool}\0{reason}\0{detail}".encode()).hexdigest() if immutable_tool else None
+    return await _approve(reason, detail, restrict_noninteractive, tool="(内置工具)",
+                          operation_key=operation_key, receipt=receipt)
 
 
 async def pretool_guard_hook(input_data, tool_use_id, context):

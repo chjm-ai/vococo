@@ -275,6 +275,152 @@ async def test_continue_runs_with_original_sdk_session(client, monkeypatch):
     assert calls[0][2]["require_resume"] is True
 
 
+async def _deferred_lark_task(client, monkeypatch, *, local_task=False, inherited_model=False):
+    from vococo.gateway import clarify
+    from vococo.memory import notices
+    from vococo.tools import lark_documents as lark
+
+    access = {"mode": "standard", "remote_brain": True, "denied": ["WebSearch"],
+              "capabilities": {"mcp": [], "skills": []}}
+    if local_task:
+        task_id = tasks.create("本地任务", "请整理资料", cwd=str(config.DATA_DIR.parent),
+                               agent_id="123456abcd", origin="chat")["id"]
+    else:
+        task_id = (await create(client))["id"]
+    key = tasks.session_key(task_id)
+    if inherited_model:
+        monkeypatch.setattr(config, "MODEL", "deepseek-flash")
+        session_store.set_chosen_model(key, "")
+    else:
+        session_store.set_chosen_model(key, "deepseek-flash")
+    assert tasks.set_status(task_id, "running")
+    tid = session_store.start_turn(key, "请整理资料", source_access=access)
+    monkeypatch.setattr(clarify, "_bg_adapter", None)
+    monkeypatch.setattr(task_runner, "_running", {})
+    cwd = AsyncMock(side_effect=lambda root, _: root)
+    monkeypatch.setattr(task_runner.worktree, "execution_cwd_for_task", cwd)
+    run_cli = AsyncMock(return_value={"ok": True})
+    monkeypatch.setattr(lark, "run_cli", run_cli)
+    args = {"operation": "update", "doc": "abc", "content": "拟写正文", "mode": "append"}
+    task_token = danger.set_task_session(key)
+    session_store.set_sdk_session_id(key, "deepseek-sdk")
+    turn_token = clarify.bind_turn(key, tid, model="deepseek-flash")
+    try:
+        assert (await lark.execute(args))["isError"]
+    finally:
+        clarify.unbind_turn(key, tid, turn_token)
+        danger.reset_task_session(task_token)
+    run_cli.assert_not_awaited()
+    session_store.finish_turn(tid, "草稿：拟写正文，尚未写入。")
+    session_store.set_sdk_session_id(key, "deepseek-sdk")
+    assert tasks.set_status(task_id, "done")
+    notice = next(n for n in notices.list_open() if n["session_key"] == key)
+    assert notice["source_turn_id"] == tid and notice["operation_key"]
+    return task_id, key, notice["id"], args, run_cli
+
+
+async def test_late_approval_after_model_switch_requires_explicit_rerun(client, monkeypatch):
+    from vococo.core.agent import AgentReply, Done
+    from vococo.gateway import notice_actions
+    from vococo.gateway.adapters.web import WebAdapter
+    from vococo.memory import notices
+    from vococo.tools import lark_documents as lark
+
+    task_id, key, nid, args, run_cli = await _deferred_lark_task(client, monkeypatch)
+    session_store.set_chosen_model(key, "gpt-6.2-sol")
+    calls = []
+
+    async def execute(history, prompt, **opts):
+        calls.append(opts)
+        assert any("拟写正文" in item.assistant for item in history)
+        assert "请整理资料" in prompt and "此前的审批不再有效" in prompt
+        assert session_store.active_source_access(key)["capabilities"] == {"mcp": [], "skills": []}
+        assert (await lark.execute(args))["isError"]  # 当前模型必须重新申请
+        yield Done(AgentReply(text="重新等待飞书审批", tool_calls=[], cost_usd=None, is_error=False))
+
+    monkeypatch.setattr(task_runner, "stream_turn", execute)
+    monkeypatch.setattr(config, "WEB_AUTH_TOKEN", "")
+    adapter = WebAdapter()
+    app = web.Application()
+    app.add_routes([web.get("/notices", adapter._handle_notices),
+                    web.post("/notices/act", adapter._handle_notice_act)])
+    async with TestClient(TestServer(app)) as browser:
+        async def act(label, expected):
+            response = await browser.post("/notices/act", json={"id": nid, "label": label})
+            assert response.status == expected, await response.text()
+
+        await act(notice_actions.RERUN_LABEL, 400)  # 不接受未经选择的重跑
+        await act("本轮任务都允许", 200)
+        assert not calls and tasks.get(task_id)["status"] == "done"
+        items = await (await browser.get("/notices")).json()
+        card = next(item for item in items["items"] if item["id"] == nid)
+        assert card["conv"] == key and card["status"] == "approved_unrun"
+        assert card["options"] == [notice_actions.RERUN_LABEL]
+        danger.grant_round(key, "写入飞书文档")  # 即使有旧进程遗留许可也不能带走
+        danger.grant_once(key, "写入飞书文档")
+        await act(notice_actions.RERUN_LABEL, 200)
+        if running := task_runner._running.get(task_id):
+            await asyncio.wait_for(running, timeout=5)
+        await act(notice_actions.RERUN_LABEL, 400)
+
+    assert len(calls) == 1 and calls[0]["model"] == "gpt-6.2-sol"
+    assert calls[0]["resume"] is None and calls[0]["require_resume"] is False
+    assert tasks.automatic_access(tasks.get(task_id))["remote_brain"] is True
+    assert notices.get(nid)["status"] == "answered"
+    assert any(n["id"] != nid and n["kind"] == "approval" for n in notices.list_open())
+    run_cli.assert_not_awaited()
+
+
+@pytest.mark.parametrize("outcome", ["success", "missing_transcript", "partial_success", "timeout"])
+async def test_late_approval_strict_resume_and_exact_permission(client, monkeypatch, outcome):
+    from vococo.core.agent import AgentReply, Done
+    from vococo.gateway import notice_actions
+    from vococo.memory import notices
+    from vococo.tools import lark_documents as lark
+
+    task_id, key, nid, args, run_cli = await _deferred_lark_task(client, monkeypatch, local_task=True)
+    assert tasks.automatic_access(tasks.get(task_id)) == {}
+    if outcome == "partial_success":
+        run_cli.return_value = {"ok": True, "data": {"result": "partial_success"}}
+    elif outcome == "timeout":
+        run_cli.side_effect = TimeoutError
+    calls = []
+
+    async def execute(history, prompt, **opts):
+        calls.append(opts)
+        if outcome == "missing_transcript":
+            raise RuntimeError("SDK transcript not found")
+        assert session_store.active_source_access(key)["denied"] == ["WebSearch"]
+        assert (await lark.execute({**args, "doc": "other-doc"}))["isError"]
+        assert (await lark.execute(args))["isError"] == (outcome != "success")
+        assert (await lark.execute(args))["isError"]  # 相同请求也只能用一次
+        yield Done(AgentReply(text="已核验", tool_calls=[], cost_usd=None, is_error=False))
+
+    monkeypatch.setattr(task_runner, "stream_turn", execute)
+    assert (await notice_actions.act(nid, "本轮任务都允许"))["ok"]
+    assert notices.get(nid)["status"] == "replaying"
+    assert not (await notice_actions.act(nid, "允许一次"))["ok"]
+    await asyncio.wait_for(task_runner._running[task_id], timeout=5)
+    assert len(calls) == 1 and calls[0]["require_resume"] is True
+    assert calls[0]["resume"] == "deepseek-sdk" and calls[0]["model"] == "deepseek-flash"
+    expected = {"success": "answered", "missing_transcript": "approved_unrun",
+                "partial_success": "verify_required", "timeout": "verify_required"}
+    assert notices.get(nid)["status"] == expected[outcome]
+    assert run_cli.await_count == (0 if outcome == "missing_transcript" else 1)
+
+
+async def test_late_approval_does_not_resume_after_default_model_changed(client, monkeypatch):
+    from vococo.gateway import notice_actions
+    from vococo.memory import notices
+
+    task_id, key, nid, _, _ = await _deferred_lark_task(client, monkeypatch, inherited_model=True)
+    monkeypatch.setattr(config, "MODEL", "gpt-6.2-sol")
+    assert session_store.get_sdk_session_id(key) == "deepseek-sdk"
+    assert (await notice_actions.act(nid, "允许一次"))["recovery"]
+    assert notices.get(nid)["status"] == "approved_unrun"
+    assert task_id not in task_runner._running
+
+
 async def test_continue_unknown_outcome_cannot_run_twice(client, monkeypatch):
     task_id = (await create(client))["id"]
     assert tasks.set_status(task_id, "running") and tasks.set_status(task_id, "done")

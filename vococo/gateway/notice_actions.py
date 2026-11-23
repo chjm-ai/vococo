@@ -32,6 +32,7 @@ from ..memory import notices
 
 APPROVE_LABELS = ("允许一次", "本次会话都允许", "本轮任务都允许", "永远允许")
 DENY_LABEL = "拒绝"
+RERUN_LABEL = "用当前模型重新执行"
 
 
 def conv_of(session_key: str) -> str | None:
@@ -62,9 +63,82 @@ async def resume(session_key: str, text: str) -> str:
     return "已发回原会话继续"
 
 
+def _approval_scope(n: dict) -> tuple[dict | None, dict | None, bool]:
+    from ..core import tasks
+    from ..memory import session_store
+
+    key = n["session_key"]
+    task = tasks.task_for_session(key)
+    origin = session_store.approval_origin(key, n["source_turn_id"], n["ts"])
+    if n["source_turn_id"] is not None and origin is None:
+        return task, None, True  # 来源已丢失，不能改用权限更宽的任务默认来源。
+    task_access = tasks.automatic_access(task) if task else {}
+    restricted = bool((origin or {}).get("remote_brain") or task_access.get("remote_brain"))
+    if not restricted:
+        return task, {}, False
+    # 原轮来源优先，且不能解除原任务权限；别复用派发的旧 claim。
+    access = {**task_access, **(origin or {}), "mode": "standard", "remote_brain": True}
+    access.pop("dispatch_resume", None)
+    access["denied"] = sorted(set(task_access.get("denied", [])) | set((origin or {}).get("denied", [])))
+    allowed = {}
+    for layer in (task_access, origin or {}):
+        for name, values in layer.get("capabilities", {}).items():
+            allowed[name] = allowed.get(name, set(values)) & set(values)
+    if allowed:
+        access["capabilities"] = {name: sorted(values) for name, values in allowed.items()}
+    return task, access, True
+
+
+def _start_retry(n: dict, task: dict, retry, label: str, conv: str | None) -> dict:
+    from ..core import task_runner, tasks
+
+    if not notices.set_status(n["id"], "replaying", label, expected=n["status"]):
+        return {"ok": False, "error": "这条审批状态已变化，请刷新"}
+    if not tasks.set_status(task["id"], "running", progress_note="准备续跑"):
+        retry.finish(n["status"])
+        return {"ok": False, "error": "任务状态已变化，请稍后再试"}
+    try:
+        task_runner.start_approval_retry(task, retry)
+    except Exception:
+        return {"ok": False, "error": "未能启动，请回铃铛查看恢复状态"}
+    message = "已尝试从原模型会话续跑，尚未确认执行" if retry.resume else "已启动重跑，写入等操作重新审批"
+    return {"ok": True, "message": message, "conv": conv}
+
+
+def _act_task_approval(n: dict, task: dict, access: dict, label: str, conv: str | None) -> dict:
+    from ..core import dispatch, task_runner, tasks
+    from ..memory import session_store
+    from . import web_bridge
+
+    key = n["session_key"]
+    if session_store.is_deleted_web_session(key) or not task_runner.can_start_approval_retry(task):
+        return {"ok": False, "error": "任务或所属 Agent 已不可用"}
+    if task_runner.session_busy(key) or web_bridge.session_busy(key):
+        return {"ok": False, "error": "原任务还在执行，请等本轮结束后再操作"}
+    model = session_store.get_chosen_model(key) or config.MODEL
+    if model.startswith(("agy-native:", "agy-trial:")):
+        return {"ok": False, "error": "请选择支持后台任务的模型后再继续"}
+    if label == RERUN_LABEL:
+        retry = task_runner.ApprovalRetry(n["id"], model, access)
+    else:
+        resume = session_store.get_sdk_session_id(key)
+        if (not resume or resume != n["resume_sdk"] or model != n["resume_model"]
+                or not n["operation_key"] or not n["source_turn_id"]
+                or session_store.latest_turn_id(key) != n["source_turn_id"]):
+            if not notices.set_status(n["id"], "approved_unrun", label, expected=n["status"]):
+                return {"ok": False, "error": "这条审批状态已变化，请刷新"}
+            return {"ok": True, "recovery": True, "conv": conv,
+                    "message": "已批准，未执行。可在铃铛用当前模型重新执行。"}
+        retry = task_runner.ApprovalRetry(n["id"], model, access, n["operation_key"], resume, n["source_turn_id"])
+    if tasks.count_running() + (dispatch.running_resumes() if dispatch.enabled() else 0) >= config.TASK_MAX_CONCURRENCY:
+        return {"ok": False, "error": "后台任务并发已满，请稍后再试"}
+    return _start_retry(n, task, retry, label, conv)
+
+
 async def act(notice_id: str, label: str) -> dict:
     """处理一条通知。返回 {"ok": bool, "message"|"error": str, "conv": str|None}。"""
     from . import clarify
+    from ..memory import session_store
 
     n = notices.get(notice_id)
     if n is None or n["status"] not in notices.OPEN_STATUSES:
@@ -72,10 +146,18 @@ async def act(notice_id: str, label: str) -> dict:
     if n["kind"] == "review":
         return _act_review(n, label)
     conv = conv_of(n["session_key"])
-    if n["status"] == "pending" and n["clarify_id"] and clarify.resolve(n["clarify_id"], label):
-        return {"ok": True, "message": "已回答", "conv": conv}
+    if n["status"] in notices.RECOVERY_STATUSES:
+        if n["kind"] != "approval" or label != RERUN_LABEL:
+            return {"ok": False, "error": "这条审批已处理，只能明确确认重跑"}
+        task, access, restricted = _approval_scope(n)
+        if not task or not restricted or access is None:
+            return {"ok": False, "error": "无法核对原任务或审批来源，请回原会话核对"}
+        return _act_task_approval(n, task, access, label, conv)
     if n["options"] and label not in n["options"]:
         return {"ok": False, "error": "选项不存在"}
+
+    if n["status"] == "pending" and n["clarify_id"] and clarify.resolve(n["clarify_id"], label):
+        return {"ok": True, "message": "已回答", "conv": conv}
 
     if n["kind"] == "approval":
         if label == DENY_LABEL:
@@ -83,6 +165,13 @@ async def act(notice_id: str, label: str) -> dict:
             return {"ok": True, "message": "已拒绝", "conv": conv}
         if label not in APPROVE_LABELS:
             return {"ok": False, "error": "选项不存在"}
+        if session_store.is_deleted_web_session(n["session_key"]):
+            return {"ok": False, "error": "原会话已删除"}
+        task, access, restricted = _approval_scope(n)
+        if restricted:
+            if not task or access is None:
+                return {"ok": False, "error": "不能核对可恢复的原任务，未发放补批授权。请回原会话核对后继续。"}
+            return _act_task_approval(n, task, access, label, conv)
         from ..tools import danger
 
         if label == "永远允许" and n["rule_kind"]:
@@ -273,6 +362,7 @@ def startup() -> None:
     """进程启动:上个进程里还在等的选项已经没人接了,统一转成已超时(仍可在铃铛里处理)。"""
     try:
         n = notices.expire_all_pending()
+        notices.recover_legacy_approvals()
         if n:
             print(f"🔔 {n} 条等待中的选项因重启转为已超时,可在铃铛里继续处理", flush=True)
     except Exception as exc:  # noqa: BLE001

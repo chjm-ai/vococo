@@ -377,7 +377,7 @@ async def _converse(
     if dispatch.enabled():
         execution_options["usage_callback"] = track_automatic_usage
     try:
-        source_token = clarify.bind_turn(session_key, turn_id)
+        source_token = clarify.bind_turn(session_key, turn_id, model=model or shared.chosen_model or config.MODEL)
         if automatic:
             from ..core import task_runner
 
