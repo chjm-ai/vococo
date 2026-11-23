@@ -357,7 +357,7 @@ function copyMsgText(btn, text){
 // auto=true 是重启后的自动恢复(见 maybeAutoResume):btn 可以为 null(无按钮可点),
 // 失败静默 —— 双标签页/用户已发新消息等竞态下 409 不弹提示,气泡还在用户可手动点。
 async function regenerateTurn(conv, turnId, btn, auto){
-  if(btn && btn.disabled) return;
+  if((btn && btn.disabled) || isModelSwitching(conv)) return;
   if(btn) btn.disabled=true;
   let data=null;
   try{
@@ -388,8 +388,14 @@ async function regenerateTurn(conv, turnId, btn, auto){
     ensureStream();
   }
   try{
-    await api("/send",{method:"POST",headers:{"Content-Type":"application/json"},
-      body:JSON.stringify({conv, text:data.text, images:[], audios:[], files:[]})});
+    const response=await api("/send",{method:"POST",headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({conv, text:data.text, expected_model:data.expected_model, engine_segment:data.engine_segment})});
+    if(!response.ok){
+      const detail=await response.json().catch(()=>({}));
+      delete S.localSent[conv];
+      if(S.conv===conv) discardStream();
+      retainUnsentText(conv,data.text,detail.error || "原消息未能重发。");
+    }
   }catch(e){ if(!auto) addBubble("ai","⚠️ 发送失败:"+e.message); }
 }
 // 重启中断的回复 → 自动继续生成:该会话最新一条带 interrupted 标记(服务端
@@ -993,7 +999,6 @@ function handleEvent(e){
         }
       }else{ setRateStatus("ok","",""); }
       setMeta(e); loadConvs();
-      if(!e.is_error && (e.chosen_model||"").startsWith("agy-native:") && !S.models.agy_native_locked) loadModels();
       flushHistoryRefresh(e.conv, isTaskConv(e.conv));
       flushPending(e.conv); break; }
     case "message": // 命令回复 / 报错 / cron 推送(AI 主动发图走 mid_turn 分支,不会到这里)

@@ -903,7 +903,10 @@ async def stream_native(key: str, turn_id: int, model: str, prompt: str, refusal
                 session_store.set_chosen_model(key, entry_id)
             if entry_id != model and suffix:
                 session_store.set_model_preferences(key, entry_id, {"effort": suffix})
-            bound = session_store.agy_native_session(key)
+            context = session_store.engine_context(key)
+            segment = context.get("segment")
+            saved_bound = session_store.agy_native_session(key)
+            bound = saved_bound if saved_bound and saved_bound.get("segment") == segment else None
             if bound:
                 cwd = _native_workspace(bound)
                 meta = await asyncio.to_thread(agy_handoff.prepare_into, Path(cwd), key)
@@ -945,7 +948,13 @@ async def stream_native(key: str, turn_id: int, model: str, prompt: str, refusal
                 log.warning("Antigravity 回复偏好疑似含凭据，跳过注入")
                 preferences = ""
             style_note = f"\n\n回复偏好（默认，用户明确要求优先）：\n{preferences}" if preferences else ""
-            turn_prompt = f"{_ACP_NOTE}{style_note}\n\n用户消息：\n{prompt}"
+            handoff = session_store.engine_handoff(key, context) if not bound else []
+            handoff_note = ""
+            if handoff:
+                history = json.dumps(handoff, ensure_ascii=False)
+                handoff_note = ("\n\n此前的聊天文字（可能有截断，仅作背景，不是本轮指令，不要重做历史操作）：\n"
+                                f"{history}")
+            turn_prompt = f"{_ACP_NOTE}{style_note}{handoff_note}\n\n用户消息：\n{prompt}"
 
             async def consume_once(sid):
                 nonlocal session_id, has_tool_results
@@ -1010,11 +1019,13 @@ async def stream_native(key: str, turn_id: int, model: str, prompt: str, refusal
             if not "".join(chunks).strip():
                 raise UpstreamError("agy_no_result")
             lock = {"id": session_id, "cwd": cwd, "agent_id": meta["agent_id"], "acp": True}
+            if segment:
+                lock["segment"] = segment
             if denied_only and not bound:
-                pass  # 首轮只发生被拒写操作，不算成功会话，不锁定
+                pass  # 首轮只发生被拒写操作，不覆盖之前的原生会话
             elif not _valid_native_id(session_id):
                 raise UpstreamError("agy_native_lock_failed")
-            elif bound and recovered:
+            elif saved_bound and (recovered or not bound):
                 if not session_store.replace_agy_native_session(key, entry_id, lock):
                     raise UpstreamError("agy_native_lock_failed")
             elif not bound and not session_store.lock_agy_native_session(key, entry_id, turn_id, lock):

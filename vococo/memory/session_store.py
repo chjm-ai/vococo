@@ -14,7 +14,9 @@
 from __future__ import annotations
 
 import json
+import re
 import time
+import uuid
 from typing import TYPE_CHECKING
 
 from . import _db
@@ -187,7 +189,7 @@ def _user_attachment_refs(files: str | None, audios: str | None, videos: str | N
     return refs
 
 
-def load_recent(session_key: str, limit: int = 40) -> list[Turn]:
+def load_recent(session_key: str, limit: int = 40, *, after_id: int = 0) -> list[Turn]:
     """只取当前会话(水位线之后)的最近 N 轮;跳过进行中(assistant_text='')的 turn。"""
     from ..core.agent import Turn  # 延迟 import:打破模块级循环依赖
 
@@ -196,7 +198,7 @@ def load_recent(session_key: str, limit: int = 40) -> list[Turn]:
     rows = c.execute(
         "SELECT id, user_text, assistant_text, images, files, audios, videos FROM turns "
         "WHERE session_key=? AND id>? AND assistant_text!='' ORDER BY id DESC LIMIT ?",
-        (session_key, wm, limit),
+        (session_key, max(wm, after_id), limit),
     ).fetchall()
     return [
         Turn(user=u, assistant=a, image_paths=_user_image_paths(images),
@@ -554,7 +556,7 @@ def new_session(session_key: str) -> None:
         "INSERT INTO session_meta(session_key, watermark_id, ctx_tokens, total_tokens) "
         "VALUES (?,?,0,0) "
         "ON CONFLICT(session_key) DO UPDATE SET "
-        "watermark_id=excluded.watermark_id, ctx_tokens=0, total_tokens=0, "
+        "watermark_id=excluded.watermark_id, ctx_tokens=0, total_tokens=0, engine_context=NULL, "
         "ctx_cli_window=0, ctx_compact_threshold=0, "
         "last_in=0, last_cache=0, last_out=0, sdk_session_id=NULL, checklist_json=NULL, "
         "cache_read_total=0, input_fresh_total=0",
@@ -658,7 +660,7 @@ def external_context_state(session_key: str, sdk_id: str | None) -> tuple[int, l
     c.execute("CREATE TABLE IF NOT EXISTS sdk_external_context("
               "session_key TEXT NOT NULL, sdk_id TEXT NOT NULL, revision INTEGER NOT NULL, "
               "PRIMARY KEY(session_key,sdk_id))")
-    watermark = _watermark(c, session_key)
+    watermark = max(_watermark(c, session_key), engine_context(session_key).get("cutoff", 0))
     revision = c.execute(
         "SELECT COALESCE(MAX(id),0) FROM turns WHERE session_key=? AND id>? "
         "AND events LIKE '%\"type\": \"external_result\"%'",
@@ -709,6 +711,7 @@ def finish_turn(
     events: list | None = None,
     *,
     session_key: str | None = None,
+    failed: bool = False,
 ) -> bool:
     """用 AI 回复填完 start_turn 占的坑;events=该轮过程时间线(可选)。
 
@@ -726,8 +729,8 @@ def finish_turn(
             ev_json = json.dumps(events, ensure_ascii=False)
         except (TypeError, ValueError):
             ev_json = None  # 时间线序列化失败不影响正文落库
-    sql = "UPDATE turns SET assistant_text=?, events=?, draft_text='', ts=? WHERE id=?"
-    params: tuple = (assistant_text, ev_json, time.time(), turn_id)
+    sql = "UPDATE turns SET assistant_text=?, events=?, draft_text='', failed=?, ts=? WHERE id=?"
+    params: tuple = (assistant_text, ev_json, int(failed), time.time(), turn_id)
     if session_key is not None:
         sql += " AND session_key=?"
         params += (session_key,)
@@ -800,7 +803,7 @@ def recover_interrupted_turns() -> list[dict]:
         return []
     message = "⚠️ 服务重启导致本轮回复中断，请重新发送。"
     c.executemany(
-        "UPDATE turns SET assistant_text=?, events=?, draft_text='', ts=? WHERE id=?",
+        "UPDATE turns SET assistant_text=?, events=?, draft_text='', failed=1, ts=? WHERE id=?",
         [(message, _interrupted_events(row[3]), time.time(), row[0]) for row in rows],
     )
     c.commit()
@@ -964,16 +967,16 @@ def duplicate_session(src_key: str, dst_key: str, title: str) -> None:
     """
     c = _conn()
     rows = c.execute(
-        "SELECT id, user_text, assistant_text, draft_text, events, images, audios, files, videos, html_previews "
+        "SELECT id, user_text, assistant_text, draft_text, events, images, audios, files, videos, html_previews, failed "
         "FROM turns WHERE session_key=? ORDER BY id",
         (src_key,),
     ).fetchall()
     now = time.time()
-    for old_id, user_text, assistant_text, draft, events, imgs, auds, fs, vids, htmls in rows:
+    for old_id, user_text, assistant_text, draft, events, imgs, auds, fs, vids, htmls, failed in rows:
         cur = c.execute(
             "INSERT INTO turns(session_key, ts, user_text, assistant_text, "
-            "draft_text, events) VALUES (?,?,?,?,?,?)",
-            (dst_key, now, user_text, assistant_text, draft, events),
+            "draft_text, events, failed) VALUES (?,?,?,?,?,?,?)",
+            (dst_key, now, user_text, assistant_text, draft, events, failed),
         )
         new_id = cur.lastrowid
         _clone_artifacts(c, src_key, old_id, dst_key, new_id)
@@ -1267,7 +1270,45 @@ def replace_agy_native_session(session_key: str, model: str, native: dict) -> bo
     return cur.rowcount == 1
 
 
-def set_chosen_model(session_key: str, model: str) -> None:
+def engine_context(session_key: str) -> dict:
+    row = _conn().execute("SELECT engine_context FROM session_meta WHERE session_key=?", (session_key,)).fetchone()
+    return json.loads(row[0]) if row and row[0] else {}
+
+
+_HANDOFF_CREDENTIAL = re.compile(
+    r'(?i)\b(?:(?:bearer|basic)\s+|(?:api[_-]?key|password|passwd|[\w-]*token|secret)["\']?\s*[:=]\s*)["\']?\S{8,}'
+)
+
+
+def engine_handoff(session_key: str, context: dict) -> list[tuple[str, str]]:
+    """只交接切换时点之前的近期聊天正文，不携带附件或工具记录。"""
+    if not context.get("carry"):
+        return []
+    from ..tools.danger import redact_secrets
+
+    c = _conn()
+    rows = c.execute(
+        "SELECT user_text, assistant_text FROM turns WHERE session_key=? AND id>? AND id<=? "
+        "AND assistant_text!='' AND user_text!='' AND substr(user_text,1,1)!='/' AND failed=0 "
+        "AND COALESCE(source_access,'{}')='{}' "
+        "AND COALESCE(images,'[]') IN ('','[]') AND COALESCE(files,'[]') IN ('','[]') "
+        "AND COALESCE(audios,'[]') IN ('','[]') AND COALESCE(videos,'[]') IN ('','[]') "
+        "ORDER BY id DESC LIMIT 6",
+        (session_key, max(_watermark(c, session_key), context["floor"]), context["cutoff"]),
+    ).fetchall()
+    result = []
+    for user, assistant in reversed(rows):
+        text = f"{user}\n{assistant}"
+        if redact_secrets(text) != text or _HANDOFF_CREDENTIAL.search(text):
+            continue
+        # 作品库的网站引用作为独立 URL 行追加到用户消息；旧轮次也没有单独的附件字段。
+        user = "\n".join(line for line in user.splitlines() if not re.fullmatch(r"https?://\S+", line.strip(), re.I))
+        if user.strip():
+            result.append((user[:300], assistant[:600]))
+    return result
+
+
+def set_chosen_model(session_key: str, model: str, *, handoff: str = "") -> None:
     """记住某会话用户选定的模型(下一轮要用哪个);/model 切换时写入,刷新/重启都不丢。
 
     如果模型确实发生变化,同时清掉 sdk_session_id —— 不同模型/供应商的 CLI
@@ -1277,11 +1318,27 @@ def set_chosen_model(session_key: str, model: str) -> None:
     """
     c = _conn()
     row = c.execute(
-        "SELECT chosen_model, agy_native_session FROM session_meta WHERE session_key=?",
+        "SELECT chosen_model, last_error FROM session_meta WHERE session_key=?",
         (session_key,),
     ).fetchone()
-    if row and row[1] and not model.startswith("agy-native:"):
-        return  # 其他入口不能把已锁定的会话切回普通模型
+    if handoff in ("recent", "fresh"):
+        previous = engine_context(session_key)
+        cutoff = c.execute(
+            "SELECT COALESCE(MAX(id),0) FROM turns WHERE session_key=?", (session_key,)
+        ).fetchone()[0]
+        floor = previous.get("floor", 0) if handoff == "recent" else cutoff
+        if row and row[1]:  # 兼容旧版只记录最后一轮失败的会话
+            c.execute("UPDATE turns SET failed=1 WHERE id=(SELECT MAX(id) FROM turns "
+                      "WHERE session_key=? AND user_text!='')", (session_key,))
+        c.execute(
+            "INSERT INTO session_meta(session_key, engine_context) VALUES (?,?) "
+            "ON CONFLICT(session_key) DO UPDATE SET engine_context=excluded.engine_context, "
+            "ctx_tokens=0, ctx_window=0, checklist_json=NULL",
+            (session_key, json.dumps(dict(segment=uuid.uuid4().hex, cutoff=cutoff,
+                                          floor=floor, carry=handoff == "recent"))),
+        )
+    elif row and row[0] and row[0].startswith("agy-native:") != model.startswith("agy-native:"):
+        return  # 跨通道必须经网页确认交接方式
     if row and row[0] != model:
         # 老会话没记模型时也不能确认旧 transcript 的身份，保守地走历史恢复。
         c.execute(
@@ -1291,8 +1348,7 @@ def set_chosen_model(session_key: str, model: str) -> None:
         )
     c.execute(
         "INSERT INTO session_meta(session_key, watermark_id, chosen_model) VALUES (?,0,?) "
-        "ON CONFLICT(session_key) DO UPDATE SET chosen_model=excluded.chosen_model "
-        "WHERE agy_native_session IS NULL OR excluded.chosen_model GLOB 'agy-native:*'",
+        "ON CONFLICT(session_key) DO UPDATE SET chosen_model=excluded.chosen_model",
         (session_key, model),
     )
     c.commit()

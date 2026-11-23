@@ -8,7 +8,7 @@ from ..memory import agents, session_store
 from ..tools import danger
 from .agent import (
     Compacted, ContextUsage, Done, SessionStarted, TextDelta, ThinkingDelta,
-    ToolFinished, ToolInput, ToolStarted, UpstreamRetry,
+    ToolFinished, ToolInput, ToolStarted, Turn, UpstreamRetry,
     effective_context_window, _window_ratio,
 )
 from . import attachment_policy
@@ -23,8 +23,13 @@ class SharedTurn:
         self.sink = sink
         self.chosen_model = session_store.get_chosen_model(session_key)
         # 定时触发用完整指令独立执行；手动续聊仍保留同一会话的历史。
-        self.history = [] if fresh else session_store.load_recent(session_key)
         self.resume = None if fresh else session_store.get_sdk_session_id(session_key)
+        context = {} if fresh else session_store.engine_context(session_key)
+        if context:
+            handoff = [Turn(user=u, assistant=a) for u, a in session_store.engine_handoff(session_key, context)]
+            self.history = handoff + session_store.load_recent(session_key, after_id=context["cutoff"])
+        else:
+            self.history = [] if fresh else session_store.load_recent(session_key)
         self.prompt_extra = agents.prompt_extra_for_session(session_key)
         self.timeline = Timeline()
         self.draft = ""

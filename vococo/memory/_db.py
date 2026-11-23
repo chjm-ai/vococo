@@ -160,15 +160,18 @@ def conn() -> sqlite3.Connection:
         )
         _DB.execute("PRAGMA journal_mode=WAL")
         _DB.executescript(_SCHEMA)
-        if "source_access" not in {r[1] for r in _DB.execute("PRAGMA table_info(turns)")}:
+        turn_cols = {r[1] for r in _DB.execute("PRAGMA table_info(turns)")}
+        if "source_access" not in turn_cols:
             _DB.execute("ALTER TABLE turns ADD COLUMN source_access TEXT")
+        if "failed" not in turn_cols:
+            _DB.execute("ALTER TABLE turns ADD COLUMN failed INTEGER NOT NULL DEFAULT 0")
         if "conversation_mode" not in {r[1] for r in _DB.execute("PRAGMA table_info(session_meta)")}:
             _DB.execute("ALTER TABLE session_meta ADD COLUMN conversation_mode TEXT DEFAULT 'task'")
             _DB.execute("UPDATE session_meta SET conversation_mode='chat' WHERE session_key IN ('main','web:main','voice-chat:main')")
         # 迁移:session_meta 增列(老库平滑升级)
         cols = {r[1] for r in _DB.execute("PRAGMA table_info(session_meta)")}
         for col, kind in (("agent_id", "TEXT"), ("project_hash", "TEXT"), ("bound_at", "REAL"),
-                          ("agy_native_session", "TEXT")):
+                          ("agy_native_session", "TEXT"), ("engine_context", "TEXT")):
             if col not in cols:
                 _DB.execute(f"ALTER TABLE session_meta ADD COLUMN {col} {kind}")
         if "title" not in cols:  # Web 会话列表用
