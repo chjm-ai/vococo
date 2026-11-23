@@ -223,11 +223,7 @@
 
   function setStatus(text, cls){
     statusEl.textContent = text; statusEl.className = cls || "";
-    // 文本 Tab 会隐藏整个语音面板，等待状态和停止入口需同步到文本面板。
-    $("#callTextStatus").hidden = !busy;
-    $("#callTextStatusLabel").textContent = busy ? text : "";
   }
-  $("#callTextStop").onclick = ()=>stopBtn.click();
   function clearHint(){ const h = transcriptEl.querySelector(".hint"); if(h) h.remove(); }
 
   function addMsg(kind, text, attachments={}){
@@ -751,7 +747,7 @@
     return turn;
   }
 
-  async function sendTurn(body, onAccepted=()=>{}){
+  async function sendTurn(body){
     if(historyLoading) return;
     const turn = beginVoiceTurn();
     busy = true; talkBtn.disabled = true; stopBtn.hidden = false;
@@ -782,8 +778,6 @@
       addMsg("ai error", detail || (resp.status === 409 ? "上一轮还没说完" : "出错了"));
       finish(); return;
     }
-    onAccepted();
-
     let aiEl = null, full = "";
     const reader = resp.body.getReader(), dec = new TextDecoder();
     let buf = "";
@@ -3045,7 +3039,7 @@
       });
       if(!resp.ok) throw new Error("聊天历史加载失败，请重新打开聊天");
       const d = await resp.json();
-      if(revision!==chatOpenRevision || S.conv!==conv || S.surface!=="call") return false;
+      if(revision!==chatOpenRevision || S.conv!==conv || S.surface!=="call" || callInputMode!=="voice") return false;
       transcriptEl.replaceChildren();
       if(d.turns?.length) clearHint();
       for(const t of d.turns || []){
@@ -3059,7 +3053,7 @@
     }
   }
   window.onChatGatewayEvent = function(e){
-    if(S.surface!=="call" || e.conv!==S.conv) return false;
+    if(S.surface!=="call" || callInputMode!=="voice" || e.conv!==S.conv) return false;
     if(!e.mid_turn && ["done","message","sync","research_result"].includes(e.type)){
       loadMainHistory().then(ok=>{
         if(!ok || e.conv!==S.conv || S.surface!=="call") return;
@@ -3100,13 +3094,43 @@
   const historyDialog = $("#chatHistoryDialog");
   $("#chatHistoryClose").onclick = ()=>historyDialog.close();
   historyDialog.onclick = e=>{ if(e.target===historyDialog) historyDialog.close(); };
+  let recentChats=[];
+  const knownChats=new Set();
+  window.chatSidebarState=()=>{
+    const ids=[...knownChats];
+    if(ids.some(conv=>S.pendingChoice[conv])) return {cls:"reviewdot", label:"有聊天等待确认"};
+    if(ids.some(conv=>S.live[conv])) return {cls:"livedot", label:"有聊天正在回复"};
+    if(ids.some(conv=>S.pendingReview[conv])) return {cls:"reviewdot", label:"有未读聊天回复"};
+    return null;
+  };
+  function chatHistoryStatus(chat){
+    const conv=chat.conv;
+    if(S.pendingChoice[conv]) return "待确认";
+    if(S.live[conv]) return "回复中";
+    if(S.pendingReview[conv] ?? chat.pending_review) return "未读";
+    return chat.last_ts ? fmtTime(chat.last_ts) : "";
+  }
   function historyRow(chat){
-    const button=el("button"), name=el("span","chat-name"), time=el("time");
-    button.type="button"; name.textContent=chat.title; time.textContent=fmtTime(chat.last_ts);
-    button.append(name,time);
+    const button=el("button"), name=el("span","chat-name"), status=el("time");
+    button.type="button"; button.dataset.conv=chat.conv;
+    name.textContent=chat.title; status.textContent=chatHistoryStatus(chat);
+    button.append(name,status);
     button.onclick=()=>{ historyDialog.close(); openCallView({agentId:chatAgentId, conv:chat.conv}); };
     return button;
   }
+  window.refreshChatHistoryBadges=()=>{
+    scheduleConvsRender();
+    if(!historyDialog.open) return;
+    for(const row of $("#chatHistoryList").querySelectorAll("button[data-conv]")){
+      const chat=recentChats.find(item=>item.conv===row.dataset.conv);
+      if(chat) row.lastElementChild.textContent=chatHistoryStatus(chat);
+    }
+  };
+  window.updateCallChatTitle=e=>{
+    const chat=S.convs.find(item=>item.conv===e.conv && item.conversation_mode==="chat");
+    if(chat && e.title) chat.title=e.title;
+    if(S.surface==="call" && S.conv===e.conv && e.title) $("#callChatTitle").textContent=e.title;
+  };
   $("#chatHistoryBtn").onclick = async ()=>{
     const list=$("#chatHistoryList"), owner=chatAgentId;
     list.textContent="加载中…"; historyDialog.showModal();
@@ -3114,9 +3138,15 @@
       const response=await api("/chats/history?agent_id="+encodeURIComponent(owner));
       if(!response.ok) throw new Error("加载失败，请重试");
       const data=await response.json();
-      if(owner!==chatAgentId) return;
-      list.replaceChildren(...data.chats.map(historyRow));
-      if(!data.chats.length) list.textContent="暂无聊天历史";
+      if(owner!==chatAgentId || !historyDialog.open) return;
+      recentChats=data.chats;
+      for(const row of recentChats){
+        knownChats.add(row.conv);
+        if(S.pendingReview[row.conv]===undefined) S.pendingReview[row.conv]=!!row.pending_review;
+      }
+      scheduleConvsRender();
+      list.replaceChildren(...recentChats.map(historyRow));
+      if(!recentChats.length) list.textContent="暂无聊天历史";
     }catch(e){ list.textContent=e.message; }
   };
 
@@ -3376,72 +3406,51 @@
   let initialized = false;
   let callInputMode = "voice";
   const sharedComposer = $("#composer");
+  const sharedMessages = $("#messages");
+  const sharedScrollButton = $("#scrollDownBtn");
   function setCallInputMode(mode){
-    callInputMode = mode === "text" ? "text" : "voice";
-    const isText = callInputMode === "text";
+    const isText = mode === "text";
+    callInputMode = mode;
+    $("#callView").dataset.input = mode;
     $("#voiceModeTab").setAttribute("aria-selected", String(!isText));
     $("#textModeTab").setAttribute("aria-selected", String(isText));
     $("#callVoicePanel").hidden = isText;
     $("#callTextPanel").hidden = !isText;
-    if(isText) $("#ta").focus();
+    $("#callBody").hidden = isText;
+    sharedMessages.hidden = !isText;
+    sharedScrollButton.hidden = !isText;
     renderTaskBar();
   }
-  $("#voiceModeTab").onclick = ()=>setCallInputMode("voice");
-  $("#textModeTab").onclick = ()=>setCallInputMode("text");
+  const textBusy=()=>!!(S.sending[S.conv] || S.live[S.conv] || S.stream || S.stopping?.[S.conv]);
+  const voiceBusy=()=>busy || handsFreeActive || recorder?.state==="recording";
+  window.callTextCanSend=()=>callInputMode==="text" && !voiceBusy() && S.histLoading!==S.conv;
+  $("#voiceModeTab").onclick = ()=>{
+    if(callInputMode==="voice") return;
+    if(textBusy()){ alert("当前聊天正在回复，结束后可切换到语音"); return; }
+    setCallInputMode("voice");
+    historyLoading=true;
+    const revision=chatOpenRevision;
+    loadMainHistory().finally(()=>{ if(revision===chatOpenRevision) historyLoading=false; });
+  };
+  $("#textModeTab").onclick = ()=>{
+    if(callInputMode==="text" || voiceBusy()) return;
+    ++chatOpenRevision; historyLoading=false;
+    setCallInputMode("text");
+    openConv(S.conv, true, true);
+    $("#ta").focus();
+  };
 
   function mountSharedComposer(inCall){
-    if(inCall){
-      if(sharedComposer.parentElement !== $("#callTextPanel")) $("#callTextPanel").appendChild(sharedComposer);
-      return;
+    const panel=$(inCall ? "#callTextPanel" : "#chatMain");
+    if(sharedComposer.parentElement!==panel) panel.append(sharedComposer);
+    const view=$(inCall ? "#callView" : "#chatMain");
+    if(sharedMessages.parentElement!==view){
+      view.insertBefore(sharedMessages, inCall ? $("#callDock") : sharedComposer);
+      sharedMessages.after(sharedScrollButton);
     }
-    if(sharedComposer.parentElement !== $("#chatMain")) $("#chatMain").appendChild(sharedComposer);
+    if(!inCall){ sharedMessages.hidden=false; sharedScrollButton.hidden=false; }
   }
 
-  // 聊天在服务端接受前保留输入，不能复用任务模式“发送即清空”的草稿锁。
-  const callTextSending={};
-  async function sendCallText(text){
-    if(historyLoading){ alert("聊天历史加载中，请稍后发送"); return; }
-    text=(text||"").trim();
-    const conv=S.conv;
-    if(callTextSending[conv]) return;
-    const attachments={images:S.images.slice(),audios:S.audios.slice(),files:S.files.slice(),libraryRefs:S.libraryRefs.slice()};
-    if(!text && !Object.values(attachments).some(items=>items.length)) return;
-    callTextSending[conv]=attachments;
-    let meRow=null, accepted=false;
-    try{
-      const uploads=[...attachments.audios,...attachments.files];
-      await Promise.all(uploads.map(item=>item.done||Promise.resolve()));
-      if(S.conv!==conv || S.surface!=="call") return;
-      if(uploads.some(item=>item.status==="error" || !item.id)){
-        addMsg("ai error", "附件上传失败，请移除失败附件或重新上传后发送；文字和附件已保留。");
-        return;
-      }
-      closeCmdMenu();
-      const shown=text+(attachments.libraryRefs.length ? "\n\n作品引用："+attachments.libraryRefs.map(item=>item.title||item.id).join("、") : "");
-      meRow=addMsg("me",shown,{
-        images:attachments.images.map(item=>item.url),audios:attachments.audios,
-        files:attachments.files.filter(item=>item.kind!=="video"),videos:attachments.files.filter(item=>item.kind==="video"),
-      }).parentElement;
-      await sendTurn({
-        text,tts:false,images:attachments.images.map(item=>({data:item.data,media_type:item.media_type})),
-        audios:attachments.audios.map(item=>({id:item.id})),
-        files:attachments.files.filter(item=>item.kind!=="video").map(item=>({id:item.id})),
-        videos:attachments.files.filter(item=>item.kind==="video").map(item=>({id:item.id})),
-        library_refs:attachments.libraryRefs.map(item=>item.id),
-      },()=>{
-        accepted=true;
-        if(callTextSending[conv]===attachments) delete callTextSending[conv];
-        if(S.conv!==conv) return;
-        for(const field of Object.keys(attachments)) S[field]=S[field].filter(item=>!attachments[field].includes(item));
-        if($("#ta").value.trim()===text){ $("#ta").value=""; clearDraft(conv); autoGrow(); }
-        saveComposerAttachments(conv); renderThumbs();
-      });
-    }finally{
-      if(callTextSending[conv]===attachments) delete callTextSending[conv];
-      if(!accepted && meRow) meRow.remove();
-    }
-  }
-  window.sendCallText = sendCallText;
   function initOnce(){
     if(initialized) return;
     initialized = true;
@@ -3503,7 +3512,7 @@
   }
 
   window.openCallView = async function(options={}){
-    if(busy || handsFreeActive){ alert("请先停止回复或挂断通话，再切换聊天"); return; }
+    if(voiceBusy()){ alert("请先结束语音通话，再切换聊天"); return; }
     const revision=++chatOpenRevision;
     const agentId=options.agentId || "general";
     let chat;
@@ -3513,28 +3522,24 @@
       chat=await response.json();
       if(!response.ok) throw new Error(chat.error||"打开聊天失败");
     }catch(e){ alert(e.message); return; }
-    if(revision!==chatOpenRevision) return;
+    if(revision!==chatOpenRevision || voiceBusy()) return;
     chatAgentId=agentId;
+    knownChats.add(chat.conv);
     if(typeof closeLibrary==="function") closeLibrary();
     closeWorkbench();
     const wasInCall=S.surface==="call";
-    S.surface = "call";
     if(!options.replay) navRecord({kind:"call",conv:chat.conv,agentId});
     closeSidebar();
     // 从普通会话进入主会话时记住原位置。重复点入口时 S.conv 已是语音主会话,
     // 不能覆盖掉返回位置。
     if(!wasInCall) S.callReturnConv = S.conv || "main";
-    if(typeof saveComposerState==="function") saveComposerState(S.conv);
-    S.conv = chat.conv;
+
     S.convs = S.convs.filter(row=>row.conv!==chat.conv);
     S.convs.unshift(chat);
     $("#callChatTitle").textContent=chat.title || "新聊天";
     transcriptEl.replaceChildren();
     currentTurnAiEl=null; currentTurnFull="";
     barTasks.clear();
-    restoreSessionModels();
-    if(typeof restoreComposerState==="function") restoreComposerState(S.conv);
-    renderProjSelChip();  // 草稿会话切入主会话时，收起仅草稿可见的项目选择器
     mountSharedComposer(true);
     setCallInputMode("text");
     $("#chatMain").hidden = true;
@@ -3556,13 +3561,10 @@
       handsFreeUi.hidden = true;
       talkBtn.hidden = false;
     }
-    renderConvs();
-    historyLoading=true;
-    try{ await loadMainHistory(); }
-    finally{ if(revision===chatOpenRevision) historyLoading=false; }
-    loadTasks();
+    await openConv(chat.conv, true, true);
+    if(revision===chatOpenRevision) loadTasks();
   };
-  window.closeCallView = function(){
+  window.closeCallView = function(switching=false){
     ++chatOpenRevision;
     historyLoading=false;
     if(historyDialog.open) historyDialog.close();
@@ -3573,11 +3575,14 @@
     if(typeof saveComposerState==="function") saveComposerState(S.conv);
     $("#callView").hidden = true;
     $("#chatMain").hidden = false;
-    S.conv = S.callReturnConv;
-    taskTree.schedule();
-    restoreSessionModels();
-    if(typeof restoreComposerState==="function") restoreComposerState(S.conv);
-    renderProjSelChip();  // 返回草稿会话时，恢复项目选择器
+    if(!switching){
+      snapshotCurrentStream();
+      S.conv = S.callReturnConv;
+      taskTree.schedule();
+      restoreSessionModels();
+      if(typeof restoreComposerState==="function") restoreComposerState(S.conv);
+      renderProjSelChip();
+    }
     teardownCallResources();
     renderConvs();   // 挂断后切回聊天侧栏,取消「语音通话」行高亮
   };

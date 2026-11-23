@@ -29,15 +29,16 @@ def _shell() -> str:
     return "\n".join(parts)
 
 
-def test_call_view_reuses_shared_composer_and_routes_text_to_voice_turn():
+def test_call_text_reuses_shared_composer_messages_and_gateway():
     html = _shell()
 
-    assert "const sharedComposer = $(\"#composer\");" in html
-    assert "mountSharedComposer(true);" in html
-    assert "window.sendCallText = sendCallText;" in html
-    assert "return window.sendCallText(text);" in html
+    assert 'const sharedComposer = $("#composer");' in html
+    assert 'const sharedMessages = $("#messages");' in html
+    assert 'mountSharedComposer(true);' in html
+    assert 'await openConv(chat.conv, true, true);' in html
+    assert 'window.sendCallText' not in html
+    assert 'await api("/send",' in html
     assert 'fetch("/voice/send?conv=" + encodeURIComponent(S.conv)' in html
-    assert 'fetch("/voice/send",' not in html
 
 
 def test_sidebar_has_one_unified_conversation_entry():
@@ -91,11 +92,13 @@ def test_closing_call_view_restores_previously_open_conversation():
 def test_switching_views_preserves_composer_draft_and_uploading_attachment():
     html = _shell()
 
-    open_view = html[html.index("window.openCallView = async function(options={})") : html.index("window.closeCallView = function()")]
-    close_view = html[html.index("window.closeCallView = function()") : html.index("// 任务状态条")]
+    open_view = html[html.index("window.openCallView = async function(options={})") : html.index("window.closeCallView = function(switching=false)")]
+    close_view = html[html.index("window.closeCallView = function(switching=false)") : html.index("// 任务状态条")]
 
-    assert 'saveComposerState(S.conv);' in open_view
-    assert 'restoreComposerState(S.conv);' in open_view
+    assert 'await openConv(chat.conv, true, true);' in open_view
+    switch = html[html.index('async function openConv(conv,'):]
+    assert 'saveComposerState(S.conv);' in switch
+    assert 'restoreComposerState(conv);' in switch
     assert 'saveComposerState(S.conv);' in close_view
     assert 'restoreComposerState(S.conv);' in close_view
 
@@ -103,17 +106,16 @@ def test_switching_views_preserves_composer_draft_and_uploading_attachment():
 def test_switching_main_view_refreshes_draft_project_selector():
     html = _shell()
 
-    call_view = html[html.index("window.openCallView = async function(options={})") : html.index("window.closeCallView = function()")]
-    close_view = html[html.index("window.closeCallView = function()") : html.index("// 任务状态条")]
+    call_view = html[html.index("window.openCallView = async function(options={})") : html.index("window.closeCallView = function(switching=false)")]
+    close_view = html[html.index("window.closeCallView = function(switching=false)") : html.index("// 任务状态条")]
 
     assert 'await api("/chats/open"' in call_view
     assert 'agent_id:agentId,new:!!options.fresh,conv:options.conv' in call_view
-    assert 'if(revision!==chatOpenRevision) return;' in call_view
-    assert 'S.conv = chat.conv;' in call_view
+    assert 'if(revision!==chatOpenRevision || voiceBusy()) return;' in call_view
+    assert 'await openConv(chat.conv, true, true);' in call_view
     assert 'S.conv = "voice-chat:main";' not in call_view
     assert "S.conv = S.callReturnConv;" in close_view
-    assert "renderProjSelChip();  // 草稿会话切入主会话时，收起仅草稿可见的项目选择器" in call_view
-    assert "renderProjSelChip();  // 返回草稿会话时，恢复项目选择器" in close_view
+    assert "renderProjSelChip();" in close_view
 
 
 def test_task_status_map_is_shared_with_sidebar_helpers():

@@ -78,7 +78,7 @@ def select(key: str, agent_id: str) -> dict:
     return _summary(key)
 
 
-def recent(agent_id: str) -> list[dict]:
+def recent(agent_id: str, *, active=()) -> list[dict]:
     owner = agents.get(agent_id)
     if not owner:
         raise ValueError("Agent 不存在")
@@ -87,6 +87,7 @@ def recent(agent_id: str) -> list[dict]:
         "SELECT session_key FROM session_meta WHERE agent_id=? AND conversation_mode='chat' "
         "AND COALESCE(archived,0)=0", (agent_id,),
     ).fetchall()
-    rows = [_summary(key) for (key,) in keys if mode(key) == "chat"]
-    return sorted((row for row in rows if row.get("turns")),
-                  key=lambda row: row.get("last_ts") or 0, reverse=True)[:30]
+    unread = session_store.pending_reviews("")
+    rows = [{**_summary(key), "pending_review": key in unread} for (key,) in keys if mode(key) == "chat"]
+    return sorted((row for row in rows if row["turns"] or row["conv"] in active),
+                  key=lambda row: (row["conv"] in active, row["last_ts"] or 0), reverse=True)[:30]

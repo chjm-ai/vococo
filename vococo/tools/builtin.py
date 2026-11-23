@@ -1208,13 +1208,17 @@ async def ask_user(args: dict) -> dict:
         ctx.session_key, options, notice={"kind": "ask", "prompt": question},
     )
     try:
-        if options:
+        from ..memory import chats
+
+        if options or (ctx.adapter.platform == "web" and chats.mode(ctx.session_key) == "chat"):
             from ..gateway.core import Choice
 
             opts = [(f"/clarify {p.clarify_id} {i}", o) for i, o in enumerate(options)]
-            opts.append((f"/clarify {p.clarify_id} other", "✍️ 其他(直接打字回答)"))
+            if options:
+                opts.append((f"/clarify {p.clarify_id} other", "✍️ 其他(直接打字回答)"))
+            prompt = f"❓ {question}" if options else f"❓ {question}\n(直接回复即可)"
             await ctx.adapter.present_choice(
-                ctx.chat_id, Choice(prompt=f"❓ {question}", options=opts)
+                ctx.chat_id, Choice(prompt=prompt, options=opts, clarify_id=p.clarify_id)
             )
         else:
             await ctx.adapter.send(ctx.chat_id, f"❓ {question}\n(直接回复即可)")
