@@ -17,6 +17,14 @@ def _run_node(source, scenario):
     assert result.returncode == 0, result.stderr
 
 
+def test_handoff_dialog_is_not_inside_a_surface_hidden_by_chat_mode():
+    page = (STATIC / "index.html").read_text(encoding="utf-8")
+    # 必须是通话、工作台和普通聊天之外的独立弹窗，否则 showModal 也不可见。
+    dialog = page.index('<dialog id="modelHandoffDialog"')
+    assert page.index('</main>', page.index('<main id="workbenchView"')) < dialog
+    assert dialog < page.index('<main id="callView"')
+
+
 def test_web_waits_for_model_ack_and_does_not_send_queue_implicitly():
     page = (STATIC / "index.html").read_text(encoding="utf-8")
     source = page[page.index("var modelSwitching ="):page.index('$("#modelBtn").onclick')]
