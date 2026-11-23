@@ -350,7 +350,10 @@ async def _converse(
     if dispatch.enabled() and not compact:
         execution_id = dispatch.begin(session_key, turn_id, source_access)
     await sink.turn_saved()
-    if not agy_path:
+    manual_native = (agy_trial.is_native_model(agy_model) and allow_agy_trial
+                     and not source_access and store_user is None and not compact)
+    prompt_files = []
+    if not agy_path or manual_native:
         user_text, prompt_files = prepare_turn_attachments(
             turn_id, user_text, images=images, audios=audios, files=files, videos=videos,
         )
@@ -390,12 +393,14 @@ async def _converse(
             from contextlib import aclosing
 
             refusal = ""
-            if not allow_agy_trial or source_access or store_user is not None or compact or any((images, audios, files, videos)):
-                refusal = "Antigravity 试用只支持在网页手动发送当前文字。"
+            if (not allow_agy_trial or source_access or store_user is not None or compact
+                    or (not manual_native and any((images, audios, files, videos)))):
+                refusal = "Antigravity 只支持在网页手动发送；旧版通道仅支持文字。"
             elif danger.redact_secrets(user_text) != user_text:
                 refusal = "这段文字可能含凭据，未发送给 Antigravity。"
             if agy_trial.is_native_model(agy_model):
-                stream = agy_trial.stream_native(session_key, turn_id, agy_model, user_text, refusal)
+                stream = agy_trial.stream_native(session_key, turn_id, agy_model, user_text, refusal,
+                                                 images=images if manual_native else None, files=prompt_files)
             else:
                 stream = agy_trial.stream_trial(agy_model or model, user_text, refusal)
             async with aclosing(stream) as events:

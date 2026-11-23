@@ -1308,8 +1308,11 @@ class WebAdapter:
                     return web.json_response({"error": "这段文字可能含凭据，未发送或保存"}, status=400)
                 if not agy_trial.enabled() or not agy_trial.accepts_session(key):
                     return web.json_response({"error": "这个会话的 Antigravity 试用不可用，请切换模型"}, status=400)
-                if any(body.get(field) for field in ("images", "audios", "files", "videos", "library_refs")):
-                    return web.json_response({"error": "Antigravity 暂不支持附件或作品引用。请移除它们，或切换到普通模型。"}, status=400)
+                if command and any(body.get(field) for field in ("images", "audios", "files", "videos", "library_refs")):
+                    return web.json_response({"error": "命令和附件请分开发送，本轮未发送。"}, status=400)
+                if not agy_trial.is_native_model(trial_model) and any(
+                        body.get(field) for field in ("images", "audios", "files", "videos", "library_refs")):
+                    return web.json_response({"error": "旧版 Antigravity 通道不支持附件，请选新的 Antigravity 模型。"}, status=400)
 
             async def check_model():
                 await check_open()
@@ -1318,7 +1321,8 @@ class WebAdapter:
                     raise ModelChangedError
 
             await check_model()
-            message = await self._prepare_message(request, body, before_accept=check_model)
+            message = await self._prepare_message(request, body, before_accept=check_model,
+                                                  native_images=agy_trial.is_native_model(trial_model))
             if isinstance(message, web.Response):
                 return message
             await check_model()
@@ -1334,7 +1338,8 @@ class WebAdapter:
             return web.json_response({"error": "会话正在删除或已删除"}, status=409)
         return web.json_response({"ok": True})
 
-    async def _prepare_message(self, request: web.Request, body: dict, *, before_accept=None) -> Incoming | web.Response:
+    async def _prepare_message(self, request: web.Request, body: dict, *, before_accept=None,
+                               native_images: bool = False) -> Incoming | web.Response:
         """共用附件解析；聊天建流成功后才确认消费上传缓存。"""
         for field, pending in (("files", self._pending_files), ("audios", self._pending_audio),
                                ("videos", self._pending_videos)):
@@ -1371,6 +1376,16 @@ class WebAdapter:
             logging.getLogger(__name__).exception("作品引用读取失败")
             return web.json_response({"error": "作品引用读取失败，请重试"}, status=500)
         images.extend(ref_images)
+        if native_images and images:
+            from ...core.attachment_policy import prepare_images
+            from ..agy_acp import image_input_available
+
+            try:
+                await asyncio.to_thread(prepare_images, images)
+            except ValueError:
+                return web.json_response({"error": "图片无效、过大或数量超限，消息未发送。"}, status=400)
+            if not await image_input_available():
+                return web.json_response({"error": "当前 Antigravity 图片能力不可用，消息未发送；可稍后重试或切换模型。"}, status=409)
         if ref_links:
             text += "\n\n" + "\n".join(ref_links)
         requested_file_ids = [str(item.get("id") or "") for item in body.get("files") or []]
@@ -4182,6 +4197,8 @@ class WebAdapter:
             )
 
     async def _start_server(self) -> None:
+        from .. import agy_tools
+
         self._preflight()
         app = web.Application(
             # 图片走 JSON+base64(32MB 够用);音频/视频走独立的 multipart 上传端点,
@@ -4193,6 +4210,7 @@ class WebAdapter:
         app.add_routes(
             [
                 web.get("/healthz", self._handle_healthz),
+                web.route("*", agy_tools.PATH, agy_tools.handle),
                 web.get("/", self._handle_index),
                 # 工作台独立窗口(见 web_static/workbench.js 的 wb-win-btn):同一份 index.html,
                 # 但用独立路径而不是 "/?view=workbench"——sw.js 的 SHELL_PATHS 只白名单了
