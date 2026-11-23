@@ -19,7 +19,8 @@ pytestmark = pytest.mark.anyio
 TOKEN = "bridge-test-token-" + "x" * 32
 AUTH = {"Authorization": f"Bearer {TOKEN}"}
 CREATE = {"title": "测试任务", "prompt": "请整理资料", "idempotency_key": "request-0001"}
-PUBLIC = {"id", "title", "status", "progress", "result", "next_offset", "cancel_requested"}
+PUBLIC = {"id", "title", "status", "model", "agent_id", "agent", "progress", "result",
+          "next_offset", "cancel_requested"}
 
 
 @pytest.fixture
@@ -95,6 +96,89 @@ async def test_continue_owned_task_once_and_reject_busy(client, monkeypatch):
     assert start.call_count == 1
     await post(client, "continue_task", {**payload, "instruction": "不同需求"}, 409)
     await post(client, "continue_task", {**payload, "id": "not-owned"}, 404)
+
+
+def register_gpt_models():
+    """把 GPT 档位放进临时设置，模拟线上已配置的 codex 模型。"""
+    assert settings_store.upsert_web_extra_model("gpt-6.2-sol", "GPT-6.2 Sol（订阅）", group="codex") is None
+    assert settings_store.upsert_web_extra_model("gpt-6.2-astra", "GPT-6.2 Astra（订阅）", group="codex") is None
+
+
+async def test_create_task_model_choice_and_default_receipt(client):
+    register_gpt_models()
+    picked = await create(client, model="GPT-6.2 Sol")
+    assert picked["model"] == "gpt-6.2-sol" and picked["status"] == "queued"
+    assert (picked["agent_id"], picked["agent"]) == ("123456abcd", "123456abcd")
+    assert session_store.get_chosen_model(tasks.session_key(picked["id"])) == "gpt-6.2-sol"
+    assert (await post(client, "get_task", {"id": picked["id"]}))["model"] == "gpt-6.2-sol"
+    # 同键同内容重放：返回同一任务，模型不变
+    replay = await create(client, model="gpt-6.2-sol")
+    assert (replay["id"], replay["model"]) == (picked["id"], "gpt-6.2-sol")
+    # 同键换模型是另一份请求，不能悄悄沿用旧任务
+    await post(client, "create_task", {**CREATE, "model": "gpt-6.2-astra"}, 409)
+    # 不传模型时沿用服务端默认，回执要如实报出来
+    default = await create(client, idempotency_key="request-0002")
+    assert default["model"] == config.MODEL
+    assert session_store.get_chosen_model(tasks.session_key(default["id"])) == ""
+
+
+async def test_create_task_invalid_or_ambiguous_model_creates_nothing(client):
+    register_gpt_models()
+    ambiguous = await post(client, "create_task", {**CREATE, "model": "gpt"}, 400)
+    assert "歧义" in ambiguous["error"] and "gpt-6.2-sol" in ambiguous["error"]
+    unknown = await post(client, "create_task", {**CREATE, "model": "no-such-model"}, 400)
+    assert "不可用" in unknown["error"] and "gpt-6.2-sol" in unknown["error"]
+    empty = await post(client, "create_task", {**CREATE, "model": "  "}, 400)
+    assert "model" in empty["error"]
+    assert tasks._conn().execute("SELECT COUNT(*) FROM tasks").fetchone()[0] == 0
+
+
+async def test_continue_dispatched_task_cannot_switch_model(client, monkeypatch):
+    register_gpt_models()
+    task_id = (await create(client, model="gpt-6.2-sol"))["id"]
+    assert tasks.set_status(task_id, "running") and tasks.set_status(task_id, "done")
+    session_store.set_sdk_session_id(tasks.session_key(task_id), "sdk-model")
+    start = Mock()
+    monkeypatch.setattr(task_runner, "start_claimed", start)
+    payload = {"id": task_id, "instruction": "继续", "idempotency_key": "cont-model-01"}
+    refused = await post(client, "continue_task", {**payload, "model": "gpt-6.2-astra"}, 400)
+    assert "不能更换模型" in refused["error"] and start.call_count == 0
+    await post(client, "continue_task", {**payload, "model": "gpt-6.2-sol"})
+    assert start.call_count == 1
+
+
+async def test_continue_history_session_switches_model(client, monkeypatch):
+    key, _ = history_session()
+    delivery = fake_web(monkeypatch)
+    register_gpt_models()
+    result = await post(client, "continue_task", {"id": key, "instruction": "换成 GPT 继续",
+                                                 "idempotency_key": "hist-model-01",
+                                                 "model": "gpt-6.2-sol"})
+    assert (result["model"], result["status"], result["continuation"]) == ("gpt-6.2-sol", "queued", "accepted")
+    assert session_store.get_chosen_model(key) == "gpt-6.2-sol"
+    assert delivery and delivery[0][0] == key
+
+
+async def test_continue_history_session_agy_target_needs_explicit_model(client, monkeypatch):
+    key, _ = history_session()
+    session_store.set_chosen_model(key, "agy-trial:gemini-3-pro")
+    delivery = fake_web(monkeypatch)
+    refused = await post(client, "continue_task", {"id": key, "instruction": "继续",
+                                                  "idempotency_key": "hist-agy-0001"}, 409)
+    assert "Antigravity" in refused["error"] and delivery == []
+    register_gpt_models()
+    await post(client, "continue_task", {"id": key, "instruction": "继续",
+                                         "idempotency_key": "hist-agy-0002", "model": "gpt-6.2-sol"})
+    assert session_store.get_chosen_model(key) == "gpt-6.2-sol" and len(delivery) == 1
+
+
+async def test_failed_task_receipt_exposes_status_and_reason(client):
+    task_id = (await create(client))["id"]
+    assert tasks.set_status(task_id, "running")
+    assert tasks.finish(task_id, "failed", "(执行失败:模型不可用)", "模型不可用")
+    result = await post(client, "get_task", {"id": task_id})
+    assert result["status"] == "failed" and "模型不可用" in result["result"]
+    assert result["model"] == config.MODEL
 
 
 async def test_continue_legacy_task_id_keeps_get_task_contract(client, monkeypatch):

@@ -86,6 +86,24 @@ async def test_static_token_official_client_and_oauth_coexist(environment, monke
                     assert (await call(oauth, "vococo_get_task", {"id": created["id"]}))["status"] == "queued"
 
 
+async def test_create_task_model_is_exposed_and_resolved(environment):
+    app, _ = environment
+    settings_store.upsert_web_extra_model("gpt-6.2-sol", "GPT-6.2 Sol（订阅）", group="codex")
+    async with session_for(app) as session:
+        tools = {tool.name: tool for tool in (await session.list_tools()).tools}
+        assert "model" in tools["vococo_create_task"].input_schema["properties"]
+        assert "model" in tools["vococo_continue_task"].input_schema["properties"]
+        created = await call(session, "vococo_create_task", {
+            "title": "模型测试", "prompt": "不执行模型", "idempotency_key": "model-create-01",
+            "model": "GPT-6.2 Sol"})
+        assert created["model"] == "gpt-6.2-sol" and created["status"] == "queued"
+        assert session_store.get_chosen_model(tasks.session_key(created["id"])) == "gpt-6.2-sol"
+        bad = await session.call_tool("vococo_create_task", {
+            "title": "无效模型", "prompt": "不执行模型", "idempotency_key": "model-create-02",
+            "model": "no-such-model"})
+        assert bad.is_error and "不可用" in bad.content[0].text
+
+
 @pytest.mark.parametrize("enabled,path,tokens", [
     (False, "/mcp/token", [STATIC]),
     (True, "/mcp/token", []),
