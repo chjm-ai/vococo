@@ -168,88 +168,59 @@ const assert=require('node:assert/strict');
     assert.equal(await page.locator('#pending .ptext').innerText(),'停止失败保留');
     assert.equal(await page.locator('#pending .pnow:disabled').count(),0);
     assert.equal(sent.at(-1),'切回后优先发送');
-    // 聊天模式的文本面板不能把等待状态和停止入口一起藏进语音面板。
+    // 文本面板与普通会话共用 /send 和 /abort，但服务端 start 前不可停止。
+    await page.unroute('**/send'); await page.unroute('**/abort');
     await page.evaluate(()=>openCallView({fresh:true}));
-    let releaseVoice;
-    const voiceGate=new Promise(resolve=>{releaseVoice=resolve;});
-    await page.route('**/voice/send?*',async route=>{
-      await voiceGate;
-      await route.fulfill({contentType:'text/event-stream',body:'event: done\ndata: {"full_text":"完成"}\n\n'}).catch(()=>{});
+    const current=await page.evaluate(()=>S.conv), stops=[];
+    let payload;
+    await page.route('**/send',route=>{
+      payload=route.request().postDataJSON();
+      return route.fulfill({json:{ok:true}});
     });
-    const stops=[];
-    await page.route('**/voice/stop',route=>{stops.push(route.request().postDataJSON()); return route.fulfill({json:{ok:true}});});
+    await page.route('**/abort',route=>{
+      stops.push(route.request().postDataJSON());
+      return route.fulfill({json:{ok:true,stopped:true}});
+    });
     await page.fill('#ta','等待状态测试'); await page.click('#sendBtn');
-    await page.waitForSelector('#callTextStatus:not([hidden])',{timeout:3000});
-    assert.ok((await page.locator('#callTextStatus').innerText()).includes('思考中'));
+    await page.waitForSelector('#callView #wrap .status',{timeout:3000});
+    assert.equal(await page.locator('#callView #wrap .statusstop').count(),0);
+    await page.evaluate(()=>handleEvent({type:'start',conv:S.conv}));
     for(const width of [320,375,390,768,1280]){
       await page.setViewportSize({width,height:844});
       for(const theme of ['dark','light']){
         await page.evaluate(theme=>document.documentElement.dataset.theme=theme,theme);
-        const row=page.locator('#callTextStatus');
-        assert.ok(await row.isVisible());
-        const size=await row.evaluate(status=>{
-          const button=status.querySelector('button'), bounds=button.getBoundingClientRect();
-          return {display:getComputedStyle(status).display,left:bounds.left,right:bounds.right,width:innerWidth,
-            background:getComputedStyle(button).backgroundColor};
-        });
-        assert.equal(size.display,'flex'); assert.ok(size.left>=0 && size.right<=size.width);
-        assert.notEqual(size.background,'rgba(0, 0, 0, 0)');
+        const status=page.locator('#callView #wrap .status');
+        assert.ok(await status.isVisible());
+        const bounds=await status.locator('.statusstop').boundingBox();
+        assert.ok(bounds && bounds.x>=0 && bounds.x+bounds.width<=width);
       }
     }
-    await page.screenshot({path:'/tmp/vococo-chat-status-after.png'});
-    await page.locator('#callTextStatus .statusstop').click();
-    await page.waitForSelector('#callTextStatus',{state:'hidden'});
-    assert.equal(stops.length,1); assert.equal(stops[0].reason,'manual');
-    releaseVoice();
-    await page.unroute('**/voice/send?*');
-    await page.route('**/voice/send?*',route=>route.fulfill({contentType:'text/event-stream',body:'event: done\ndata: {"full_text":"正常完成"}\n\n'}));
-    await page.fill('#ta','正常完成测试'); await page.click('#sendBtn');
-    await page.waitForFunction(()=>$('#transcript').textContent.includes('正常完成'));
-    await page.waitForSelector('#callTextStatus',{state:'hidden'});
-    await page.unroute('**/voice/send?*');
-    await page.route('**/voice/send?*',route=>route.fulfill({status:500,json:{error:'测试失败'}}));
+    await page.locator('#callView #wrap .statusstop').click();
+    await page.waitForSelector('#callView #wrap .status',{state:'hidden'});
+    assert.deepEqual(stops,[{conv:current}]);
+    await page.evaluate(()=>handleEvent({type:'cancelled',conv:S.conv}));
+    await page.unroute('**/send');
+    await page.route('**/send',route=>route.fulfill({status:400,json:{error:'测试失败'}}));
     await page.fill('#ta','失败测试'); await page.click('#sendBtn');
-    await page.waitForFunction(()=>$('#transcript').textContent.includes('测试失败'));
-    await page.waitForSelector('#callTextStatus',{state:'hidden'});
+    await page.waitForFunction(()=>$('#wrap').textContent.includes('测试失败'));
     assert.equal(await page.inputValue('#ta'),'失败测试');
-    // 文件选择和上传复用真实端点，聊天请求必须包含附件而不是只发送文字。
+    await page.waitForSelector('#callView #wrap .status',{state:'hidden'});
     await page.locator('#file').setInputFiles({name:'chat-report.txt',mimeType:'text/plain',buffer:Buffer.from('聊天附件内容')});
     await page.waitForFunction(()=>S.files.length===1 && !!S.files[0].id);
     await page.click('#sendBtn');
-    await page.waitForFunction(()=>$('#transcript').textContent.includes('测试失败'));
-    await page.waitForSelector('#callTextStatus',{state:'hidden'});
-    assert.equal(await page.evaluate(()=>S.files.length),1,'拒绝发送不能清空附件');
-    assert.equal(await page.locator('#transcript .row.me').filter({hasText:'chat-report.txt'}).count(),0);
-    await page.unroute('**/voice/send?*');
-    let attachmentPayload;
-    await page.route('**/voice/send?*',route=>{
-      attachmentPayload=route.request().postDataJSON();
-      return route.fulfill({contentType:'text/event-stream',body:'event: done\ndata: {"full_text":"附件已处理"}\n\n'});
+    await page.waitForFunction(()=>!S.sending[S.conv] && S.files.length===1);
+    assert.equal(await page.locator('#wrap .row.me').filter({hasText:'chat-report.txt'}).count(),0);
+    await page.unroute('**/send');
+    await page.route('**/send',route=>{
+      payload=route.request().postDataJSON(); return route.fulfill({json:{ok:true}});
     });
     await page.fill('#ta',''); await page.click('#sendBtn');
-    await page.waitForFunction(()=>$('#transcript').textContent.includes('附件已处理'));
-    assert.equal(attachmentPayload.text,''); assert.equal(attachmentPayload.files.length,1);
-    assert.equal(await page.evaluate(()=>S.files.length),0);
-    assert.equal(await page.locator('#transcript .row.me').filter({hasText:'chat-report.txt'}).count(),1);
-    // 上传等待期间反复切换输入状态，不得触发任务模式的“发送即清空”。
-    await page.evaluate(()=>{
-      const conv=S.conv;
-      let release;
-      const item={name:'pending.wav',status:'uploading',done:new Promise(resolve=>release=resolve)};
-      S.audios=[item]; $('#ta').value='上传中的草稿';
-      window.pendingChatSend=sendCallText($('#ta').value);
-      for(let i=0;i<2;i++){
-        saveComposerState(conv); S.conv='attachment-other'; restoreComposerState(S.conv);
-        saveComposerState(S.conv); S.conv=conv; restoreComposerState(conv);
-      }
-      window.uploadDraftPreserved=S.audios[0]===item;
-      item.status='error'; release();
-    });
-    await page.evaluate(()=>window.pendingChatSend);
-    assert.equal(await page.evaluate(()=>window.uploadDraftPreserved),true);
-    assert.equal(await page.evaluate(()=>S.audios.length),1);
-    assert.equal(await page.inputValue('#ta'),'上传中的草稿');
+    await page.waitForFunction(()=>!S.sending[S.conv] && S.files.length===0);
+    assert.equal(payload.conv,current); assert.equal(payload.text,''); assert.equal(payload.files.length,1);
+    assert.equal(await page.locator('#wrap .row.me').filter({hasText:'chat-report.txt'}).count(),1);
+    await page.evaluate(()=>handleEvent({type:'done',conv:S.conv,text:'附件已处理'}));
+    await page.waitForFunction(()=>$('#wrap').textContent.includes('附件已处理'));
     assert.deepEqual(errors,[]);
-    console.log(JSON.stringify({ok:true,aborts,voiceStops:stops.length,chatAttachments:true}));
+    console.log(JSON.stringify({ok:true,aborts,chatStops:stops.length,chatAttachments:true}));
   }finally{await browser.close();}
 })().catch(e=>{console.error(e);process.exit(1);});

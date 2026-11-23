@@ -312,6 +312,14 @@ def _coerce(p: _Pending, text: str) -> str:
     return t
 
 
+def resolve_text_for_choice(session_key: str, clarify_id: str, text: str) -> bool:
+    """文本回答用明确的会话和编号，不把迟到的回答投给下一条提问。"""
+    p = _pending.get(clarify_id)
+    if p is None or p.session_key != session_key or not p.awaiting_text or not text.strip():
+        return False
+    return resolve(clarify_id, _coerce(p, text))
+
+
 def resolve_text_for_session(session_key: str, text: str) -> bool:
     """用户直接打字回复 → 解除该会话最老的待答 clarify。"""
     p = _oldest(session_key)

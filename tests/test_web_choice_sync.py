@@ -48,7 +48,7 @@ function makeWindow(){
   function element(){return {dataset:{},hidden:true,children:[],classList:{add(){}},
     append(...xs){this.children.push(...xs);},querySelectorAll(){return this.children;},
     set innerHTML(v){this.children=[];},get innerHTML(){return '';}};}
-  const ctx={S:{conv:'other',convs:[],pendingChoice:{}},window:{addEventListener(){}},
+  const ctx={taskTree:{event(){}}, S:{conv:'other',convs:[],pendingChoice:{}},window:{addEventListener(){}},
     IntersectionObserver:class{observe(){} unobserve(){}},
     ResizeObserver:class{observe(){} unobserve(){}},setInterval(){},setTimeout(){},
     IS_MOBILE_DEVICE:false,navigator:{userAgent:''},URLSearchParams,location:{search:''},
@@ -99,6 +99,12 @@ assert.equal(b.ctx.S.pendingChoice.c1,undefined);
 vm.runInContext("NTC.seen.clear(); autoPopupNewPending();",b.ctx);
 assert.equal(b.nodes['#choiceModal'].hidden,true);
 assert.equal(b.ctx.S.pendingChoice.c1,undefined);
+const background=makeWindow();
+background.event({...choice('chat','chat-a'),chat_mode:true});
+assert.equal(background.nodes['#choiceModal'],undefined,'后台聊天不弹出审批窗');
+assert.equal(background.ctx.S.pendingChoice['chat-a'].options[0][0],'/clarify chat 0');
+background.event({type:'notices',clarify_id:'chat',status:'answered'});
+assert.equal(background.ctx.S.pendingChoice['chat-a'],undefined);
 '''.replace("STATIC", json.dumps(str(STATIC)))
     result = subprocess.run([node, "-e", script], capture_output=True, text=True)
     assert result.returncode == 0, result.stderr

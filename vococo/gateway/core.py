@@ -556,6 +556,7 @@ class Choice:
 
     prompt: str
     options: list[tuple[str, str]]
+    clarify_id: str = ""
 
 
 @dataclass

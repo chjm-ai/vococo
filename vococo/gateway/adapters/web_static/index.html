@@ -530,12 +530,7 @@ try{
           <button id="startCallBtn" hidden title="开始录音" aria-label="开始录音"></button>
         </footer>
       </div>
-      <div id="callTextPanel" hidden>
-        <div id="callTextStatus" class="status" hidden>
-          <span class="chip live"><span id="callTextStatusLabel" role="status"></span><span class="dots" aria-hidden="true"><i></i><i></i><i></i></span></span>
-          <button id="callTextStop" type="button" class="statusstop" title="停止回复" aria-label="停止回复"><span class="sq"></span></button>
-        </div>
-      </div>
+      <div id="callTextPanel" hidden></div>
     </div>
     <div id="tasksDrawer">
       <div id="tasksSheet">
@@ -605,7 +600,7 @@ function updateEmpty(){
   // 最近对话列表,在任务界面里是噪音(2026-08-04 主人反馈"背景一堆会话很混乱")。
   // 保持中间留白,标题栏操作区与输入框本来就在 #empty 之外,不受影响。
   const isCron = (S.cronJobs||[]).some(x=>x.conv===S.conv);
-  const show = !isCron && !$("#wrap").children.length;
+  const show = S.surface!=="call" && !isCron && !$("#wrap").children.length;
   $("#empty").style.display = show ? "flex" : "none";
   if(show){
     if(!wasShown) homeRecentExpanded = false;   // 每次重新进入欢迎屏,最近对话收起回默认态
@@ -2029,7 +2024,16 @@ function revealChatTurn(node){
   setTimeout(()=>node.classList.remove("chat-anchor"), 2400);
   updateScrollBtn();
 }
-async function openConv(conv, silentGroup){
+// 摘下流式气泡而不停止回复；同一会话重开也复用它，避免旧状态行留在 DOM 中。
+function snapshotCurrentStream(){
+  if(!S.stream || !S.conv) return;
+  clearInterval(S.stream.timer);
+  S.stream.row.remove();
+  S.streamSnap[S.conv]={state:S.stream, asOf:(S.live[S.conv]||[]).length};
+  S.stream=null;
+}
+
+async function openConv(conv, silentGroup, inCall=false){
   const openSeq=++_convOpenSeq;
   // 在读取磁盘缓存之前取消旧请求,包括切到本地草稿和重复打开同一会话。
   if(S.histAbort) S.histAbort.abort();
@@ -2037,19 +2041,13 @@ async function openConv(conv, silentGroup){
   _chatAnchor=null;
   if(typeof closeLibrary==="function") closeLibrary();
   closeWorkbench();
-  closeCallView();  // 切到别的会话就等于离开通话;没在通话视图里时这行是空操作
+  if(!inCall) closeCallView(true);
   if(typeof hideDocPreviewPanel==="function") hideDocPreviewPanel();  // 只隐藏,不清 S.docPreview[旧会话],按会话记忆见下方恢复
-  S.surface = "chat";
-  $("#chatMain").hidden = false;  // 确保聊天界面可见
+  S.surface = inCall ? "call" : "chat";
+  $("#chatMain").hidden = inCall;
   closeCmdMenu();
   $("#convDocsPop").hidden=true;
-  // 离开的会话仍在流式:别把已经建好的工具卡 DOM 扔掉重来,摘下来存好,回来时直接接回,
-  // 只补上离开期间新增的那几条事件(见 maybeReplayStream)
-  if(S.stream && S.conv && S.conv!==conv){
-    clearInterval(S.stream.timer);
-    S.stream.row.remove();
-    S.streamSnap[S.conv]={state:S.stream, asOf:(S.live[S.conv]||[]).length};
-  }
+  snapshotCurrentStream();
   // 切到目标会话时,若全局审批弹窗正开着则关闭(用户选择进去处理)
   const cmodal=$("#choiceModal"); if(cmodal && !cmodal.hidden){ cmodal.hidden=true; }
   if(typeof saveComposerState==="function") saveComposerState(S.conv);
@@ -2057,7 +2055,7 @@ async function openConv(conv, silentGroup){
   S.conv=conv; S.stream=null;
   resetMessageScroll();
   taskTree.open(conv);
-  navRecord({kind:"chat", conv});
+  if(!inCall) navRecord({kind:"chat", conv});
   if(typeof restoreComposerState==="function") restoreComposerState(conv);
   // 文档预览面板同样按会话独立:目标会话之前打开过就重新渲染,没有就保持上面已隐藏的状态
   if(S.docPreview[conv] && typeof openDocPreview==="function") openDocPreview(S.docPreview[conv]);
@@ -2078,7 +2076,7 @@ async function openConv(conv, silentGroup){
   // 跟内容历史一起切换。语音主会话不在 tasks 数组,单独接上。
   const c=(S.voiceSidebar.main && S.voiceSidebar.main.conv===conv ? S.voiceSidebar.main : null)
     || findConv(conv);
-  if(!(c && c.pinned)){   // 主会话等置顶行不属于任何分组,别联动展开/切换"默认项目"
+  if(!inCall && !(c && c.pinned)){   // 主会话等置顶行不属于任何分组,别联动展开/切换"默认项目"
     S.project=convProject(conv);
     // silentGroup:APP 启动时静默落地到新任务用,别把用户上次手动折叠的分组重新展开
     if(!silentGroup){ S.expanded.add(grpKey(S.project)); saveExpanded(); }
@@ -2162,6 +2160,7 @@ async function openConv(conv, silentGroup){
     if(ctl.signal.aborted) return;
     maybeReplayStream(conv);   // 该会话仍在流式 → 用缓冲在历史下方重建流式气泡(切换不中断)
     if(S.conv===conv && S.pendingChoice[conv]) renderChoice(S.pendingChoice[conv]);  // 切回带待审批的会话 → 补出按钮
+    flushHistoryRefresh(conv);
     return;
   }
   if(S.conv!==conv) return;

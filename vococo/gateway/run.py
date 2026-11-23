@@ -170,16 +170,24 @@ class GatewayRunner:
         text = (inc.text or "").strip()
         key = inc.session_key
         if text.startswith("/clarify "):
-            parts = text.split()
+            parts = text.split(maxsplit=3)
             if len(parts) >= 3:
                 cid, tok = parts[1], parts[2]
-                if tok == "other":
+                if tok == "text":
+                    if len(parts) == 4:
+                        clarify.resolve_text_for_choice(key, cid, parts[3])
+                elif tok == "other":
+                    from ..memory import chats
+
                     clarify.mark_awaiting_text(cid)
-                    await adapter.send(inc.chat_id, "好,直接打字回答就行。")
+                    if adapter.platform != "web" or chats.mode(key) != "chat":
+                        await adapter.send(inc.chat_id, "好,直接打字回答就行。")
                 elif not clarify.resolve_button(cid, tok):
                     await adapter.send(inc.chat_id, await self._late_click(cid, tok))
             return True
         if not text.startswith("/") and clarify.has_pending(key):
+            if inc.images or inc.audios or inc.files or inc.videos:
+                return False  # 带附件是下一条消息，不能当作待批问题的文本回答。
             clarify.resolve_text_for_session(key, text)
             return True
         return False
@@ -462,6 +470,8 @@ class GatewayRunner:
         # voice/task_tools.py 的 voice_continue_session)
         web_adapter = self.adapters.get("web")
         if web_adapter is not None:
+            if hasattr(web_adapter, "voice_turn_lock"):
+                web_adapter.voice_turn_lock = self._lock_for
             if hasattr(web_adapter, "set_model_switch_callback"):
                 web_adapter.set_model_switch_callback(self.update_model_cache)
             from . import web_bridge

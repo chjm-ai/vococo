@@ -461,7 +461,8 @@ function buildVoiceMainRow(inCall){
   const mainBody=el("div","cvbody");
   mainBody.innerHTML=ic("mic");
   const mainCt=el("div","ct"); mainCt.textContent="聊天模式"; mainBody.append(mainCt);
-  // 主行不显示时刻(2026-08-04:与其他会话行区分,保持简洁)
+  const state=window.chatSidebarState?.();
+  if(state){ const dot=el("span",state.cls); dot.title=state.label; dot.setAttribute("aria-label",state.label); mainBody.append(dot); }
   mainRow.append(mainBody);
   mainRow.onclick=()=>{ openCallView(); };
   return mainRow;
