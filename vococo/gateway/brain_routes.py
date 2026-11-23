@@ -44,10 +44,10 @@ _BLOCKED = (
 DENIED = ["Agent", "Task", "SendMessage", "CronCreate", "CronDelete", "CronList", "EnterWorktree", "ExitWorktree",
           *[f"mcp__vococo__{name}" for name in _BLOCKED]]
 _FIELDS = {
-    "create_task": ({"title", "prompt", "idempotency_key"}, set()),
+    "create_task": ({"title", "prompt", "idempotency_key"}, {"model"}),
     "get_task": ({"id"}, {"offset", "length"}),
     "cancel_task": ({"id"}, set()),
-    "continue_task": ({"id", "instruction", "idempotency_key"}, {"agent_id"}),
+    "continue_task": ({"id", "instruction", "idempotency_key"}, {"agent_id", "model"}),
     "list_agents": (set(), {"offset", "limit", "query"}),
     "list_sessions": (set(), {"agent_id", "all_agents", "offset", "limit", "query"}),
     "read_session": ({"key"}, {"agent_id", "before_id", "turn_id", "offset", "length"}),
@@ -141,6 +141,38 @@ def _number(data: dict, key: str, default: int, maximum: int, minimum: int = 0) 
     return value
 
 
+def _model_choice(data: dict) -> str:
+    """把可选的 model 参数解析成唯一规范 ID；省略时返回空串(沿用默认模型)。
+
+    只认模型面板里当前可用的档位。歧义、不可用、Antigravity 一律报错——调用方
+    看不到服务端默认模型，静默回退会让「用 GPT」的派单实际跑在别的模型上。
+    """
+    value = data.get("model")
+    if value is None:
+        return ""
+    if not isinstance(value, str) or not value.strip() or len(value) > 100:
+        _reject(400, "model 必须是非空文本，最多 100 字符")
+    from .. import providers
+    from .core import MODEL_CHOICES
+
+    candidates = providers.available_models(MODEL_CHOICES)
+    hits = providers.match_models_by_text(value, candidates)
+    if not hits:
+        _reject(400, f"model 不可用：{value}；可用模型：{'、'.join(item[0] for item in candidates)}")
+    if len(hits) > 1:
+        _reject(400, f"model 存在歧义：{'、'.join(item[0] for item in hits)}；请传完整模型 ID")
+    chosen = hits[0][0]
+    if chosen.startswith(("agy-trial:", "agy-native:")):
+        _reject(400, "Antigravity 试用仅支持网页手动发送，不能用于后台任务")
+    return chosen
+
+
+def _continuation_digest(instruction: str, model: str) -> str:
+    """续接幂等摘要；带模型时把模型算进去，避免同指令换模型被当成重放。"""
+    payload = f"{instruction}\x00{model}" if model else instruction
+    return hashlib.sha256(payload.encode()).hexdigest()
+
+
 def _registry():
     connection = tasks._conn()
     connection.execute(
@@ -189,7 +221,9 @@ def _create_atomic(data: dict, agent: dict, connection: str = "") -> dict:
     key = _text(data, "idempotency_key", 128)
     if not re.fullmatch(r"[A-Za-z0-9_.:-]{8,128}", key):
         _reject(400, "idempotency_key 必须是 8..128 位 ASCII 安全字符")
-    payload = json.dumps([title, prompt], ensure_ascii=True)
+    model = _model_choice(data)
+    # 不带模型的旧请求保持原 payload 形态，部署后老幂等键仍能正常重放。
+    payload = json.dumps([title, prompt, model] if model else [title, prompt], ensure_ascii=True)
     access = _access(agent, connection)
     conn = _registry()
     with conn:
@@ -207,6 +241,9 @@ def _create_atomic(data: dict, agent: dict, connection: str = "") -> dict:
             dispatch_platform="web", dispatch_chat_id=agent["main_conv"], agent_id=bridge_agent_id(),
             source_session_key=access["session"], source_access=access, commit=False,
         )
+        if model:
+            # 必须在任务起跑前写进 session_meta，执行器只认这里的会话模型。
+            session_store.set_chosen_model(tasks.session_key(task["id"]), model)
         conn.execute(
             "INSERT INTO brain_bridge_tasks(task_id,agent_id,idempotency_key,payload,source_session_key) VALUES (?,?,?,?,?)",
             (task["id"], bridge_agent_id(), key, payload, access["session"]),
@@ -252,7 +289,11 @@ def _task_view(task: dict, data: dict) -> dict:
     result = _clean((task.get("result_full") or task.get("result_summary") or "")
                     if task["status"] in tasks.TERMINAL_STATUSES else "")
     end = offset + length
+    agent_id = task.get("agent_id") or ""
     return {"id": task["id"], "title": _clean(task["title"]), "status": task["status"],
+            # 实际执行模型：任务会话显式选过就用它，否则是全局默认。
+            "model": session_store.get_chosen_model(tasks.session_key(task["id"])) or config.MODEL,
+            "agent_id": agent_id, "agent": (_light_meta(agent_id) if agent_id else {}).get("name", ""),
             "progress": _clean(task.get("progress_note", ""))[:8000], "result": result[offset:end],
             "next_offset": end if end < len(result) else None,
             "cancel_requested": bool(task.get("cancel_requested"))}
@@ -290,6 +331,7 @@ def _continue_task(data: dict, agent: dict, _connection: str = "") -> dict:
     key = _text(data, "idempotency_key", 128)
     if not re.fullmatch(r"[A-Za-z0-9_.:-]{8,128}", key):
         _reject(400, "idempotency_key 必须是 8..128 位 ASCII 安全字符")
+    model = _model_choice(data)
     existing = _registry().execute(
         "SELECT kind FROM brain_bridge_continuations WHERE idempotency_key=?", (key,)
     ).fetchone()
@@ -297,17 +339,17 @@ def _continue_task(data: dict, agent: dict, _connection: str = "") -> dict:
     # 续接,查不到再按会话解析。裸 ID 永远不会被当作派发任务创建。
     if existing is not None:
         if existing["kind"] == "task":
-            return _continue_dispatched_task(target, instruction, key)
-        return _continue_history_session(data, agent, target, instruction, key, _connection)
+            return _continue_dispatched_task(target, instruction, key, model)
+        return _continue_history_session(data, agent, target, instruction, key, _connection, model)
     # 完整会话 key 一律按历史会话处理(非法形态由解析处报 400),不当作派发任务。
     if target.startswith(("web:", "task:", "session:")):
-        return _continue_history_session(data, agent, target, instruction, key, _connection)
+        return _continue_history_session(data, agent, target, instruction, key, _connection, model)
     # 裸派单 ID 保持旧契约；同名历史会话需显式传完整 key，不能抢走任务路由。
     record = _registry().execute(
         "SELECT 1 FROM brain_bridge_tasks WHERE task_id=?", (target,)).fetchone()
     if record:
-        return _continue_dispatched_task(target, instruction, key)
-    return _continue_history_session(data, agent, target, instruction, key, _connection)
+        return _continue_dispatched_task(target, instruction, key, model)
+    return _continue_history_session(data, agent, target, instruction, key, _connection, model)
 
 
 def _continue_replay(existing, target: str, digest: str) -> None:
@@ -318,9 +360,14 @@ def _continue_replay(existing, target: str, digest: str) -> None:
         _reject(409, "续接状态不确定，请检查原会话，不要更换幂等键重试")
 
 
-def _continue_dispatched_task(target: str, instruction: str, key: str) -> dict:
+def _continue_dispatched_task(target: str, instruction: str, key: str, model: str = "") -> dict:
     task = _owned_task(_text({"id": target}, "id", 128))
-    digest = hashlib.sha256(instruction.encode()).hexdigest()
+    if model:
+        current_model = session_store.get_chosen_model(tasks.session_key(task["id"])) or config.MODEL
+        if model != current_model:
+            # 换模型必然丢掉可恢复的 SDK 会话，续接就无法延续原上下文。
+            _reject(400, f"续接已派发任务不能更换模型（当前 {current_model}）；请用 create_task 新派一个指定模型的任务")
+    digest = _continuation_digest(instruction, model)
     conn = _registry()
     with conn:
         conn.execute("BEGIN IMMEDIATE")
@@ -436,14 +483,22 @@ def _claim_history_delivery(conn, session_key: str, agent_id: str, key: str,
 
 
 def _continue_history_session(data: dict, agent: dict, target: str, instruction: str, key: str,
-                              connection: str) -> dict:
+                              connection: str, model: str = "") -> dict:
     from ..tools import sessions
-    from . import web_bridge
+    from . import settings_store, web_bridge
 
     session_key, agent_id = _history_target(data, target)
-    result = {"id": session_key, "agent_id": agent_id, "continuation": "accepted",
-              "continuation_instruction": _clean(instruction)}
-    digest = hashlib.sha256(instruction.encode()).hexdigest()
+    current = session_store.get_chosen_model(session_key)
+    if model and current.startswith("agy-native:") != model.startswith("agy-native:"):
+        # set_chosen_model 对跨通道切换是静默忽略的；宁可拒绝，也不能假装换了模型。
+        _reject(409, "目标会话是 Antigravity 原生通道，跨通道切换需在网页确认交接；本次未发送")
+    if not model and current.startswith(("agy-trial:", "agy-native:")):
+        _reject(409, "目标会话当前使用 Antigravity 试用，只能网页手动发送；请传 model 指定可用模型后续接")
+    # 没显式选过模型的网页会话按网页默认模型执行，回执要报实际会跑的模型。
+    effective = model or current or settings_store.get_web_default_model() or config.MODEL
+    result = {"id": session_key, "agent_id": agent_id, "model": effective, "status": "queued",
+              "continuation": "accepted", "continuation_instruction": _clean(instruction)}
+    digest = _continuation_digest(instruction, model)
     text = f"【跨会话指令 · 来源 MCP:{bridge_agent_id()}】\n以下为用户完整指令：\n{instruction}"
     conn = _registry()
     with conn:
@@ -453,6 +508,11 @@ def _continue_history_session(data: dict, agent: dict, target: str, instruction:
             _continue_replay(old, session_key, digest)
             return result
         _claim_history_delivery(conn, session_key, agent_id, key, digest, instruction, text)
+    if model:
+        session_store.set_chosen_model(session_key, model)
+        if session_store.get_chosen_model(session_key) != model:
+            sessions.release_queue_slot(session_key, text)
+            _reject(409, "该会话未能切换到指定模型，本次未发送")
     # 先持久化 pending；投递或最终落库结果不确定时拒绝重放，不能重复执行。
     access = _access(agent, connection)
     access["capabilities"] = {"skills": [], "mcp": []}

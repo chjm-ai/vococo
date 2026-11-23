@@ -812,12 +812,13 @@ def _approval_text(tool: str, args: dict) -> str:
 
     if tool == "vococo_create_task":
         body = display(args.get('prompt'))
-        detail = f"标题: {clip(args.get('title'), 100)}\n\n{body}"
+        detail = f"标题: {clip(args.get('title'), 100)}\n模型: {clip(args.get('model'), 100) or '默认'}\n\n{body}"
         return f"Antigravity 想派发后台任务给 vococo：\n\n{_fence(detail)}\n\n共 {len(body)} 字。"
     if tool == "vococo_continue_task":
         body = display(args.get('instruction'))
         agent = clip(args.get('agent_id'), 64) or '默认'
-        detail = f"会话: {clip(args.get('id'), 160)}\nAgent: {agent}\n\n{body}"
+        detail = (f"会话: {clip(args.get('id'), 160)}\nAgent: {agent}\n"
+                  f"模型: {clip(args.get('model'), 100) or '沿用会话当前模型'}\n\n{body}")
         return f"Antigravity 想向历史会话续发指令：\n\n{_fence(detail)}\n\n共 {len(body)} 字。"
     if tool == "vococo_cancel_task":
         return f"Antigravity 想取消任务：\n\n{_fence(clip(args.get('id'), 160))}"

@@ -102,7 +102,15 @@ async def _call(port: int, bridge: str, operation: str, data: dict) -> dict[str,
     errors = {400: "参数无效", 401: "本机桥认证失败", 403: "来源被拒绝", 404: "不存在或无权访问",
               409: "任务忙、无可恢复上下文、幂等键冲突或续接状态不确定；请查询原任务，不要换键盲目重试", 503: "本机桥尚未配置"}
     if response.status_code != 200:
-        raise BridgeError(errors.get(response.status_code, "vococo 本机桥异常"))
+        # 400/409 的正文是本机桥自己写的可执行说明（模型不可用、占用原因等），
+        # 直接透给调用方，否则外部只会看到「参数无效」，无从纠正。
+        detail = ""
+        if response.status_code in (400, 409):
+            with contextlib.suppress(Exception):
+                message = response.json().get("error")
+                if isinstance(message, str) and message.strip():
+                    detail = message.strip()[:500]
+        raise BridgeError(detail or errors.get(response.status_code, "vococo 本机桥异常"))
     result = response.json()
     if not isinstance(result, dict):
         raise ValueError("vococo 本机桥返回格式错误")
@@ -116,14 +124,18 @@ def _register_tasks(server: FastMCP, port: int, bridge: str) -> None:
         "仅当没有明确关联的已有任务时新建。先检查当前对话的任务ID，必要时搜索历史并读取相关会话；"
         "明确属于同一任务时优先 vococo_continue_task，多个候选或关系不明确时先问用户。"
         "派 Vococo 开发执行并立即返回任务ID，不等待完成；必须给完整背景。"
+        "可用 model 指定执行模型（传完整 ID，如 gpt-6.2-sol），不传用服务端默认模型；"
+        "模型无效或有歧义会直接报错并返回可用模型，不会静默改用别的模型。"
+        "返回里的 model 是实际执行模型，status=queued/running 只表示已接单，不代表执行完成。"
         "同一次派单用同一个 idempotency_key 重试，避免重复执行。危险操作需在 vococo 审批。"))
     async def vococo_create_task(
         title: Annotated[str, Field(min_length=1, max_length=100)],
         prompt: Annotated[str, Field(min_length=1, max_length=60000)],
         idempotency_key: Annotated[str, Field(pattern=r"^[A-Za-z0-9_.:-]{8,128}$")],
+        model: Annotated[str | None, Field(min_length=1, max_length=100)] = None,
     ) -> dict[str, Any]:
         return await _call(port, bridge, "create_task", {"title": title, "prompt": prompt,
-                           "idempotency_key": idempotency_key})
+                           "idempotency_key": idempotency_key, "model": model})
 
     @server.tool(annotations=_CONTINUE, description=(
         "在已有的原会话里接着执行，不新建会话，原上下文不变。两种目标："
@@ -134,15 +146,18 @@ def _register_tasks(server: FastMCP, port: int, bridge: str) -> None:
         "保留目标 Agent 与上下文，但本轮沿用远端标准权限和禁用工具，不授予目标额外技能或外部 MCP。"
         "历史会话结果用 vococo_read_session 查询，通知沿用网页入口，不产生新任务或任务终态回调。"
         "只表示已入队，不代表执行完成。同一次续接必须使用同一个 idempotency_key，"
-        "遇到状态不确定先查会话历史，不要换键重复发送。关系不明确或多个候选时先询问用户。"))
+        "遇到状态不确定先查会话历史，不要换键重复发送。关系不明确或多个候选时先询问用户。"
+        "model 可选：给历史会话目标切换模型（Antigravity 通道受限制时用它能改回可用模型）；"
+        "续接已派发任务不允许换模型，会被拒绝。"))
     async def vococo_continue_task(
         id: Annotated[str, Field(min_length=1, max_length=512)],
         instruction: Annotated[str, Field(min_length=1, max_length=60000)],
         idempotency_key: Annotated[str, Field(pattern=r"^[A-Za-z0-9_.:-]{8,128}$")],
         agent_id: Identifier | None = None,
+        model: Annotated[str | None, Field(min_length=1, max_length=100)] = None,
     ) -> dict[str, Any]:
         return await _call(port, bridge, "continue_task", {"id": id, "instruction": instruction,
-                           "idempotency_key": idempotency_key, "agent_id": agent_id})
+                           "idempotency_key": idempotency_key, "agent_id": agent_id, "model": model})
 
     @server.tool(annotations=_READ, description="查询本连接创建的任务状态及结果。next_offset 非空时继续分页；queued/running 不代表完成。")
     async def vococo_get_task(id: Identifier, offset: Offset = 0, length: Length = 8000) -> dict[str, Any]:
