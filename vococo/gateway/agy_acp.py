@@ -7,6 +7,7 @@
 
 import asyncio
 import json
+import tempfile
 import uuid
 from contextlib import aclosing
 from datetime import datetime
@@ -379,10 +380,56 @@ def _tool_names(server_name, tools):
     return names
 
 
-async def _open_session(client, workspace, servers, session_id):
-    await _result(client.request('initialize', {
+async def _initialize(client):
+    result = await _result(client.request('initialize', {
         'protocolVersion': 1, 'clientCapabilities': {},
         'clientInfo': {'name': 'vococo', 'version': '1'}}))
+    return (result or {}).get('agentCapabilities') or {}
+
+
+def _supports_images(caps):
+    return (caps.get('promptCapabilities') or {}).get('image') is True
+
+
+_image_capability = (None, 0.0, False)
+_image_capability_lock = asyncio.Lock()
+
+
+async def image_input_available() -> bool:
+    """网页接收前检查 CLI 能力，不发模型请求；启动异常时保守保留草稿。"""
+    global _image_capability
+    cli = agy_trial.cli_binary()
+    loop = asyncio.get_running_loop()
+    try:
+        file_stat = cli.stat()
+        version = (str(cli), file_stat.st_mtime_ns, file_stat.st_size)
+    except OSError:
+        return False
+    async with _image_capability_lock:
+        key, expiry, known = _image_capability
+        if key == version and loop.time() < expiry:
+            return known
+        proc = None
+        try:
+            async with asyncio.timeout(8):
+                proc = await agy_trial.spawn_cli(
+                    (str(cli), '--mode', 'plan', '--settings', agy_trial.SETTINGS, 'acp', '--stdio'),
+                    tempfile.gettempdir(), asyncio.subprocess.PIPE)
+                supports = _supports_images(await _initialize(_Client(proc, set())))
+        except (AcpError, OSError, TimeoutError, ValueError, TypeError, AttributeError):
+            return False
+        finally:
+            if proc is not None:
+                with anyio.CancelScope(shield=True):
+                    await agy_trial.terminate(proc)
+        _image_capability = (version, loop.time() + 300, supports)
+        return supports
+
+
+async def _open_session(client, workspace, servers, session_id, *, require_images=False):
+    caps = await _initialize(client)
+    if require_images and not _supports_images(caps):
+        raise AcpError('agy_images_unsupported')
     params = {'cwd': str(workspace), 'mcpServers': servers}
     if session_id:
         params['sessionId'] = session_id
@@ -419,9 +466,9 @@ def _check_finish(result):
         raise AcpError('agy_finish_invalid')
 
 
-async def _stream_prompt(client, session_id, prompt, deadline, hard_end, progress_window):
+async def _stream_prompt(client, session_id, prompt, deadline, hard_end, progress_window, *, image_blocks=()):
     trace = client.trace
-    params = {'sessionId': session_id, 'prompt': [{'type': 'text', 'text': prompt}]}
+    params = {'sessionId': session_id, 'prompt': [{'type': 'text', 'text': prompt}, *image_blocks]}
     try:
         async with aclosing(client.request('session/prompt', params)) as events:
             async for kind, payload in events:
@@ -452,7 +499,7 @@ def _turn_failure_code(exc, deadline):
 
 async def stream_turn(workspace, timeout, model, prompt, *, effort=None, session_id=None,
                       extra_servers=(), allowed_tools=(), approve=None, max_timeout=None,
-                      progress_window=0, started_at=None, turn_id=None):
+                      progress_window=0, started_at=None, turn_id=None, image_blocks=(), settings=None):
     """原生 ACP 一轮；所有尝试共享同一个起点和硬上限。"""
     loop = asyncio.get_running_loop()
     start = loop.time() if started_at is None else started_at
@@ -469,13 +516,15 @@ async def stream_turn(workspace, timeout, model, prompt, *, effort=None, session
         async with deadline:
             proc = await agy_trial.spawn_cli(
                 (str(agy_trial.cli_binary()), '--mode', 'accept-edits',
-                 '--settings', agy_trial.SETTINGS_ACP, 'acp', '--stdio'),
+                 '--settings', settings or agy_trial.SETTINGS_ACP, 'acp', '--stdio'),
                 workspace, asyncio.subprocess.PIPE)
             client = _Client(proc, allowed.union(allowed_tools or ()), approve=approve, trace=trace)
-            session_id, result = await _open_session(client, workspace, [*servers, *extra_servers], session_id)
+            session_id, result = await _open_session(client, workspace, [*servers, *extra_servers], session_id,
+                                                     require_images=bool(image_blocks))
             await _apply_model(client, session_id, result, model, effort)
             yield 'session', session_id
-            async with aclosing(_stream_prompt(client, session_id, prompt, deadline, hard_end, progress_window)) as events:
+            async with aclosing(_stream_prompt(client, session_id, prompt, deadline, hard_end, progress_window,
+                                                image_blocks=image_blocks)) as events:
                 async for event in events:
                     yield event
         outcome = 'ok'

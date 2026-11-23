@@ -175,6 +175,11 @@ async def test_web_native_binding_only_after_success(isolated, monkeypatch):
 
 @pytest.mark.anyio
 async def test_cross_engine_switch_is_reversible_and_handoff_is_opt_in(isolated, monkeypatch):
+    import base64
+    import io
+
+    from PIL import Image
+
     from vococo.core import worktree
     from vococo.core.agent import AgentReply, Done
     from vococo.gateway import web_bridge
@@ -184,6 +189,10 @@ async def test_cross_engine_switch_is_reversible_and_handoff_is_opt_in(isolated,
     monkeypatch.setattr(agy_trial, "cli_binary", lambda: Path("/bin/sh"))
     monkeypatch.setattr(agy_trial, "enabled", lambda: True)
     settings_store.set_web_default_model("deepseek-flash")
+    monkeypatch.setattr(config, "IMAGES_DIR", isolated / "images")
+    image_file = io.BytesIO()
+    Image.new("RGB", (20, 20), "green").save(image_file, format="PNG")
+    image_data = base64.b64encode(image_file.getvalue()).decode()
     acp, sdk = [], []
     conv = "session:" + uuid.uuid4().hex
     workspace = isolated / "workspaces" / "agy-handoff" / "session-test"
@@ -197,7 +206,7 @@ async def test_cross_engine_switch_is_reversible_and_handoff_is_opt_in(isolated,
         return None
 
     async def acp_turn(cwd, timeout, model, prompt, *, session_id=None, **kwargs):
-        acp.append((prompt, session_id))
+        acp.append((prompt, session_id, kwargs.get("image_blocks")))
         yield "session", session_id or str(uuid.uuid4())
         yield "delta", "AGY_RESULT"
 
@@ -215,6 +224,12 @@ async def test_cross_engine_switch_is_reversible_and_handoff_is_opt_in(isolated,
     monkeypatch.setattr(agy_trial, "_vococo_mcp_bundle", no_mcp)
     monkeypatch.setattr(agy_handoff, "prepare", lambda *_: meta)
     monkeypatch.setattr(agy_handoff, "prepare_into", lambda *_: meta)
+    image_cap = False
+
+    async def image_available():
+        return image_cap
+
+    monkeypatch.setattr(agy_acp, "image_input_available", image_available)
     monkeypatch.setattr(agy_acp, "stream_turn", acp_turn)
     monkeypatch.setattr(worktree, "execution_cwd", cwd)
     monkeypatch.setattr(core, "stream_turn", normal_turn)
@@ -256,12 +271,18 @@ async def test_cross_engine_switch_is_reversible_and_handoff_is_opt_in(isolated,
         stale = await send("纯文字但无标记")
         assert stale.status == 409 and (await stale.json())["code"] == "model_mismatch"
         attachment = await send("附带引用", HIGH, library_refs=["dummy"])
-        assert attachment.status == 400 and "附件" in (await attachment.json())["error"]
-        assert (await send("第一次 AGY", HIGH)).status == 200
+        assert attachment.status == 404
+        images = [{"data": image_data, "media_type": "image/png"}]
+        assert (await send("不支持时保留草稿", HIGH, images=images)).status == 409
+        assert adapter._inbox.empty()
+        image_cap = True
+        assert (await send("第一次 AGY", HIGH, images=images)).status == 200
         assert (await choose("gpt-6.2-sol", handoff="recent")).status == 409  # 已入队但尚未开始
         await runner._handle(adapter, await anext(adapter.receive()))
         first_agy = session_store.agy_native_session(conv)
         assert first_agy and "SONNET_CONTEXT" in acp[0][0]
+        assert acp[0][2] == [{"type": "image", "mimeType": "image/png", "data": image_data}]
+        assert session_store.load_history(conv)[-1]["images"]
         assert not any(marker in acp[0][0] for marker in (
             "SECRET_ROW", "ATTACHMENT_MARKER", "FAILED_QUERY", "FAILED_RESULT", "library-only", "OLD_EXTERNAL_RESULT",
         ))
@@ -276,7 +297,7 @@ async def test_cross_engine_switch_is_reversible_and_handoff_is_opt_in(isolated,
         assert (await send("现在 GPT")).status == 200
         await runner._handle(adapter, await anext(adapter.receive()))
         assert sdk[-1][0] == "gpt-6.2-sol" and sdk[-1][2] is None
-        assert any(turn.assistant == "AGY_RESULT" for turn in sdk[-1][1])
+        assert not any(turn.assistant == "AGY_RESULT" for turn in sdk[-1][1]), "跨模型不自动交接附件轮"
         assert (await choose(LOW, handoff="fresh")).status == 200
         assert (await send("从新开始 AGY", LOW)).status == 200
         await runner._handle(adapter, await anext(adapter.receive()))
@@ -345,6 +366,7 @@ async def test_legacy_session_falls_back_to_new_acp_session(isolated, monkeypatc
     workspace = isolated / "workspaces" / "agy-handoff" / "session-legacy"
     workspace.mkdir(parents=True)
     key = "session:legacy"
+    session_store.bind_session(key, agent_id="general")
     session_store.set_chosen_model(key, HIGH)
     conn = session_store._conn()
     conn.execute("UPDATE session_meta SET agy_native_session=? WHERE session_key=?",
@@ -495,6 +517,7 @@ async def test_denied_write_tool_without_model_text_returns_receipt_and_does_not
     workspace = isolated / "workspaces" / "agy-handoff" / "session-denied"
     workspace.mkdir(parents=True)
     key = "session:denied"
+    session_store.bind_session(key, agent_id="general")
     session_store.set_chosen_model(key, HIGH)
 
     async def spec():
@@ -649,3 +672,19 @@ async def test_native_parser_rejects_session_mismatch_and_unexpected_tools(tmp_p
     with pytest.raises(agy_trial.UpstreamError, match="agy_unexpected_tool"):
         async for _ in agy_trial.read_answer(proc_for([init, denied]), model, tmp_path, native=True):
             pass
+
+
+def test_native_attachment_text_keeps_context_and_never_sends_detected_secret(tmp_path):
+    from vococo.core.agent import FileAttachment
+
+    docs = [
+        FileAttachment(data=b"synthetic transcript", media_type="text/plain", filename="asr.txt"),
+        FileAttachment(data=b"%PDF-1.4 synthetic only", media_type="application/pdf", filename="layout.pdf",
+                       local_path=str(tmp_path / "layout.pdf")),
+        FileAttachment(data=b"Authorization: Bearer synthetic_unknown_value", media_type="text/plain", filename="omit.txt",
+                       local_path=str(tmp_path / "omit.txt")),
+    ]
+    text, blocks = agy_trial._native_attachment_prompt([], docs)
+    assert blocks == []
+    assert "synthetic transcript" in text and "layout.pdf" in text and "%PDF" not in text
+    assert "synthetic_unknown_value" not in text and "omit.txt" not in text

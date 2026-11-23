@@ -69,7 +69,7 @@ def _library_result(text: str, receipt: dict) -> dict:
     "成功后使用返回的副本路径。保留原仓库未提交改动，不拉远端、不推送。"
     "path 为目标原仓库的绝对路径，不要求关联：完全访问直接准备，标准权限由工具按需请求审批。"
     "无需先询问主人到设置里关联；授权仅用于本会话，不改变长期关联。聊天不可调用；失败不得回退原仓库修改。",
-    {"path": str},
+    {"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]},
 )
 async def prepare_repository(args: dict) -> dict:
     import subprocess
