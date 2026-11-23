@@ -175,3 +175,54 @@ async def test_chat_api_rejects_invalid_selection(isolated, monkeypatch):
             response = await client.post("/chats/open", json=body)
             assert response.status == 400
         assert (await client.get("/chats/history?agent_id=missing")).status == 400
+
+
+@pytest.mark.anyio
+async def test_text_chat_runs_concurrently_and_abort_only_stops_target(isolated, monkeypatch):
+    import asyncio
+
+    from vococo.core import tasks
+    from vococo.core.agent import AgentReply, Done, TextDelta
+    from vococo.gateway import core
+    from vococo.gateway.run import GatewayRunner
+    from vococo.voice import routes
+
+    monkeypatch.setattr(config, "WEB_AUTH_TOKEN", "")
+    monkeypatch.setattr(tasks, "_DB", None)
+    a, b = (chats.create("general")["conv"] for _ in range(2))
+    started = {key: asyncio.Event() for key in (a, b)}
+    finish_a = asyncio.Event()
+
+    async def stream(*args, session_key, **kwargs):
+        started[session_key].set()
+        yield TextDelta(session_key)
+        if session_key == b:
+            await asyncio.Future()  # 只有取消 B 才会结束它。
+        await finish_a.wait()
+        yield Done(AgentReply("A 正常完成", [], None, False))
+
+    monkeypatch.setattr(core, "stream_turn", stream)
+    adapter = WebAdapter()
+    runner = GatewayRunner([adapter])
+    adapter.set_cancel_callback(runner.cancel_turn)
+    app = web.Application()
+    app.add_routes([
+        web.post("/send", adapter._handle_send), web.post("/abort", adapter._handle_abort),
+        web.get("/chats/history", adapter._handle_chat_history),
+    ])
+    routes.register_routes(app, turn_lock=runner._lock_for)
+    # 模拟网关接收两个真实 /send 请求，并像生产环境一样并行派发。
+    async with TestClient(TestServer(app)) as client, asyncio.timeout(5), asyncio.TaskGroup() as group:
+        for conv in (a, b):
+            response = await client.post("/send", json={"conv": conv, "text": "测试 " + conv})
+            assert response.status == 200
+            group.create_task(runner._dispatch(adapter, await adapter._inbox.get()))
+            await started[conv].wait()
+        history = await (await client.get("/chats/history")).json()
+        assert {row["conv"] for row in history["chats"]} == {a, b}
+        assert (await client.post(f"/voice/send?conv={a}", json={"text": "不能抢占文字轮"})).status == 409
+        assert (await (await client.post("/abort", json={"conv": b})).json())["stopped"]
+        assert runner._cancel_scopes[a].cancel_called is False
+        finish_a.set()
+    assert session_store.load_history(a)[-1]["assistant"] == "A 正常完成"
+    assert session_store.load_history(b)[-1]["assistant"] != "A 正常完成"

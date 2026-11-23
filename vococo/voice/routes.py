@@ -13,6 +13,7 @@ import json
 import re
 import time
 import uuid
+from anyio import WouldBlock
 from aiohttp import web
 
 from .. import config, providers
@@ -33,6 +34,7 @@ _lock = asyncio.Lock()
 _stop_event: asyncio.Event | None = None
 _turn_task: asyncio.Task | None = None
 _turn_id: str | None = None
+_turn_key: str | None = None
 _TURN_ID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.I)
 
 
@@ -204,7 +206,7 @@ def _sse(resp: web.StreamResponse, event: str, payload: dict) -> "asyncio.Future
     return resp.write(f"event: {event}\ndata: {data}\n\n".encode("utf-8"))
 
 
-async def _handle_send(request: web.Request, *, prepare_message=None) -> web.StreamResponse:
+async def _handle_send(request: web.Request, *, prepare_message=None, turn_lock=None) -> web.StreamResponse:
     if (guard := _guard(request)) is not None:
         return guard
     from ..memory import chats, session_store
@@ -214,12 +216,12 @@ async def _handle_send(request: web.Request, *, prepare_message=None) -> web.Str
         return web.json_response({"error": "无效的聊天会话"}, status=400)
     token = session.activate(key)
     try:
-        return await _send_turn(request, prepare_message=prepare_message)
+        return await _send_turn(request, prepare_message=prepare_message, turn_lock=turn_lock)
     finally:
         session._active_key.reset(token)
 
 
-async def _send_turn(request: web.Request, *, prepare_message=None) -> web.StreamResponse:
+async def _send_turn(request: web.Request, *, prepare_message=None, turn_lock=None) -> web.StreamResponse:
     """发起一轮:body 既可以是 {"text": "..."} 也可以直接传 multipart 音频
     (字段名 audio)——后者省掉「先 /voice/stt 拿文字、再单独发一次 /voice/send」
     这一趟完整的网络往返(手机 ⇄ 服务器隔着隧道,这一趟在真机上很有分量),
@@ -228,7 +230,7 @@ async def _send_turn(request: web.Request, *, prepare_message=None) -> web.Strea
     # _prev_text/_prev_ts 缺 global 声明曾是定时炸弹(2026-07-22):函数里对它们有
     # 赋值,Python 会把整个函数内的引用都当局部变量,抢占路径一读就 UnboundLocalError
     # → 新一句直接 500,旧轮也没被取消。
-    global _stop_event, _turn_task, _turn_id, _prev_text, _prev_ts, _prev_key
+    global _stop_event, _turn_task, _turn_id, _turn_key, _prev_text, _prev_ts, _prev_key
     if (g := _guard(request)) is not None:
         return g
     turn_id = _request_turn_id(request)
@@ -268,7 +270,11 @@ async def _send_turn(request: web.Request, *, prepare_message=None) -> web.Strea
     if not is_audio and not has_attachments and _prev_key == session.current_key() and _prev_text and (time.monotonic() - _prev_ts) < _TEXT_MERGE_WINDOW:
         print(f"[voice/send] 文本累积合并: prev={_prev_text[-30:]!r} + {user_text[:30]!r}", flush=True)
         user_text = _prev_text + user_text
+    key = session.current_key()
+    conversation_lock = turn_lock(key) if turn_lock else None
     if _lock.locked():
+        if _turn_key is not None and _turn_key != key:
+            return web.json_response({"error": "另一场语音通话还在回复"}, status=409)
         t = _turn_task
         if t is None or t.done():
             # 持锁的不是可抢占的 HTTP 轮(旧 WS 链路在跑)——维持原 409。
@@ -286,8 +292,16 @@ async def _send_turn(request: web.Request, *, prepare_message=None) -> web.Strea
             await asyncio.wait_for(_lock.acquire(), timeout=15)
         except asyncio.TimeoutError:  # 极小概率:两句话同时到,锁被同行请求抢先
             return web.json_response({"error": "上一轮还没说完"}, status=409)
+    # 文本聊天走网关；同一会话的语音轮须与网关轮共用一把锁。
+    if conversation_lock is not None:
+        try:
+            conversation_lock.acquire_nowait()
+        except WouldBlock:
+            _lock.release()
+            return web.json_response({"error": "当前聊天正在回复，请稍后再试"}, status=409)
     _turn_task = asyncio.current_task()
     _turn_id = turn_id
+    _turn_key = key
 
     # 为下一轮可能的文本累积记录当前请求的文本和时间戳
     if not is_audio:
@@ -500,6 +514,9 @@ async def _send_turn(request: web.Request, *, prepare_message=None) -> web.Strea
         if _turn_task is asyncio.current_task():
             _turn_task = None
             _turn_id = None
+            _turn_key = None
+        if conversation_lock is not None:
+            conversation_lock.release()
         _lock.release()
 
     # 语音版重启退出:不经过 GatewayRunner._dispatch, 直接在这里检测退出
@@ -637,7 +654,7 @@ async def _handle_tasks_stream(request: web.Request) -> web.StreamResponse:
     return await task_routes.handle_tasks_stream(request)
 
 
-def register_routes(app: web.Application, *, prepare_message=None) -> None:
+def register_routes(app: web.Application, *, prepare_message=None, turn_lock=None) -> None:
     """挂载语音模式全部路由；主 Web 服务注入共用附件解析入口。"""
     from functools import partial
 
@@ -647,7 +664,7 @@ def register_routes(app: web.Application, *, prepare_message=None) -> None:
             web.get("/voice/config", _handle_config),
             web.post("/voice/config", _handle_config_post),
             web.post("/voice/stt", _handle_stt),
-            web.post("/voice/send", partial(_handle_send, prepare_message=prepare_message)),
+            web.post("/voice/send", partial(_handle_send, prepare_message=prepare_message, turn_lock=turn_lock)),
             web.post("/voice/stop", _handle_stop),
             web.post("/voice/clear", _handle_clear),
             web.post("/voice/debug", _handle_debug),

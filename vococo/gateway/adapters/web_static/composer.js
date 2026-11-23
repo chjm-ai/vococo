@@ -6,8 +6,6 @@
 // 图片 base64 和已上传附件都可能很大，不能放 localStorage；仅在当前页面内按会话保存。
 function saveComposerAttachments(conv=S.conv){
   if(!conv) return;
-  // 发送中的内容已经从界面移走,不能因为切会话时看到空数组而覆盖后台快照。
-  if(S.sending[conv] && S.inflightComposer[conv]) return;
   if(S.images.length || S.audios.length || S.files.length || S.libraryRefs.length){
     S.composerAttachments[conv]={images:S.images,audios:S.audios,files:S.files,libraryRefs:S.libraryRefs};
   }else delete S.composerAttachments[conv];
@@ -38,11 +36,6 @@ function saveComposerState(conv=S.conv){
 }
 function restoreComposerState(conv){
   restoreDraft(conv);
-  if(S.sending[conv]){
-    // 发送中的内容已经在发送入口处清空,切回来也保持这个"已发出"的表面状态。
-    S.images=[]; S.audios=[]; S.files=[]; S.libraryRefs=[]; renderThumbs();
-    return;
-  }
   restoreComposerAttachments(conv);
 }
 
@@ -81,8 +74,14 @@ async function send(text, display, opts){
   opts=opts||{};
   closeCmdMenu();
   if(opts.manualText && agyCopyActive()) return;
-  if(!$("#callView").hidden && !opts.forceMain) return window.sendCallText(text);
-  text=(text||"").trim(); if(!text && !S.images.length && !S.audios.length && !S.files.length && !S.libraryRefs.length) return;
+  if(S.surface==="call" && !window.callTextCanSend()) return;
+  text=(text||"").trim();
+  const choice=S.pendingChoice[S.conv];
+  if(choice?.chat_mode && (!choice.options.length || choice.awaitingText)){
+    if(text) await sendChatChoiceText(choice, text);
+    return;
+  }
+  if(!text && !S.images.length && !S.audios.length && !S.files.length && !S.libraryRefs.length) return;
   // 发送目标钉死在发起时的会话/附件快照:下面等上传的 await 期间用户可能已经切走,
   // S.conv/S.images 等全局状态会变成新会话的——不钉死就会把这条消息、气泡、回执错投过去。
   let sendConv=S.conv;
@@ -171,8 +170,9 @@ async function send(text, display, opts){
     return;
   }
   if(!text.startsWith("/")) S.localSent[sendConv] = true;
+  let optimisticStream=null;
   if(!text.startsWith("/") && !S.stream && isCurrent()){
-    ensureStream();
+    optimisticStream=ensureStream();
     if(auds.some(a=>!a.text)) S.stream.audioPending = true;
     if(meRow) S.stream.userRow=meRow;
   }
@@ -197,6 +197,12 @@ async function send(text, display, opts){
     S.inflightComposer[sendConv]=S.inflightComposer[oldConv];
     delete S.inflightComposer[oldConv];
     delete S.sending[oldConv]; S.sending[sendConv]=true;
+    if(S.conv===oldConv) saveComposerState(oldConv);
+    saveDraft(sendConv, readDraft(oldConv)); clearDraft(oldConv);
+    if(S.composerAttachments[oldConv]){
+      S.composerAttachments[sendConv]=S.composerAttachments[oldConv];
+      delete S.composerAttachments[oldConv];
+    }
     // localSent 上面是按发起时的 local- id 打的,而回显的 "user" 事件带的是转正后的真实
     // id —— 不迁移这把钥匙就对不上,新会话第一条消息会重复冒一个气泡。
     if(S.localSent[oldConv]){ delete S.localSent[oldConv]; S.localSent[sendConv]=true; }
@@ -242,24 +248,20 @@ async function send(text, display, opts){
     if(isCurrent()) renderProjSelChip();
     if(wasLocal && isCurrent()) taskTree.open(sendConv);
     loadConvsSoon();
-    // 服务端确认后才丢弃后台快照。可见输入框早已在发送入口清空,
-    // 用户若在上传或发送期间切会话,回来仍保持「已发出」的表面状态。
-    const hasNewContent=isCurrent() &&
-      (!!$("#ta").value || S.images.length || S.audios.length || S.files.length || S.libraryRefs.length);
+    // 只释放已发送的快照；回执可能在后台返回，不能清除发送之后新写的草稿。
     delete S.sending[oldConv]; delete S.sending[sendConv];
     delete S.inflightComposer[oldConv]; delete S.inflightComposer[sendConv];
-    clearDraft(oldConv);
-    if(!hasNewContent){
-      clearDraft(sendConv);
-      delete S.composerAttachments[oldConv]; delete S.composerAttachments[sendConv];
-      if(isCurrent()) clearComposerVisible();
-    }
     if(wasLocal && isCurrent()) setTimeout(loadConvs, 400);
     return;
   }
   delete S.sending[oldConv]; delete S.sending[sendConv];
   delete S.localSent[oldConv]; delete S.localSent[sendConv];
   delete S.sendAcks[clientRequestId];
+  if(meRow) meRow.remove();
+  if(optimisticStream){
+    if(S.conv===sendConv && S.stream===optimisticStream) discardStream();
+    if(S.streamSnap[sendConv]?.state===optimisticStream) delete S.streamSnap[sendConv];
+  }
   // /send 失败时不能把附件和文字一起吞掉,否则用户只能重新选择文件,且误以为已发送。
   // 当前已切到别的会话时,也要把失败态写回原会话缓存,切回后才能重试。
   S.composerAttachments[oldConv]={images:sendImages,audios:sendAudios,files:sendFiles, libraryRefs:sendLibraryRefs};
@@ -296,7 +298,22 @@ async function sendCmd(cmd, conv){
     if(wasLocal && isCurrent) taskTree.open(conv);
     loadConvsSoon();
     if(wasLocal) setTimeout(loadConvs, 400);
-  }catch(err){ addBubble("ai","⚠️ 发送失败:"+err.message); }
+    return true;
+  }catch(err){
+    if(S.conv===conv) addBubble("ai","⚠️ 发送失败:"+err.message);
+    return false;
+  }
+}
+async function sendChatChoiceText(choice, text){
+  const id=choiceId(choice), conv=choice.conv;
+  if(!id || choice.sending) return;
+  choice.sending=true;
+  try{
+    if(!await sendCmd(`/clarify ${id} text ${text}`, conv)) return;
+    if(S.conv===conv){
+      if($("#ta").value.trim()===text){ $("#ta").value=""; clearDraft(conv); autoGrow(); }
+    }else if(readDraft(conv).trim()===text) clearDraft(conv);
+  }finally{ choice.sending=false; }
 }
 // CLI 交接只走剪贴板；不创建聊天轮次，也不清空草稿。
 function agyCopyActive(){ return !!S.agyHandoff && S.agyHandoff.conv===S.conv; }
@@ -337,6 +354,7 @@ function updateSendBtn(){
 }
 async function stopReply(){
   if(!S.stream && !S.live[S.conv]) return;
+  if(S.surface==="call" && !hasStartedChatReply()) return;
   const conv=S.conv;
   // 乐观更新:任务会话先本地把任务行置「已停止」,不等后端收尾落库——
   // 收尾含最多 5 秒 CLI interrupt + 写库,SSE 终态要晚几秒才到,干等会让
@@ -360,7 +378,7 @@ async function stopReply(){
       if(optimistic) restoreTaskStopped(conv, optimistic);  // 停失败,恢复原状态
       // 停不住 = 流的源头(轮次/任务)其实已经结束,比如 SSE 缓冲重放的历史流。
       // 明说一句,免得用户以为按钮没反应、反复点。
-      if(S.conv===conv) addBubble("ai", "已停止(当前没有正在运行的回复或任务)");
+      if(S.conv===conv) addBubble("ai", S.surface==="call" ? "回复尚未开始或已结束，未停止任何回复。" : "已停止(当前没有正在运行的回复或任务)");
       flushPending(conv);
     }
   }catch(e){
@@ -542,10 +560,12 @@ function saveDraft(conv=S.conv, value){
     else localStorage.removeItem(draftKey(conv));  // 清空了就删 key,不留空草稿
   }catch(e){}
 }
+function readDraft(conv){
+  try{ return localStorage.getItem(draftKey(conv))||""; }catch(e){ return ""; }
+}
 function restoreDraft(conv){
   closeComposerPrompts();
-  let v=""; try{ v=localStorage.getItem(draftKey(conv))||""; }catch(e){}
-  $("#ta").value=v; autoGrow();
+  $("#ta").value=readDraft(conv); autoGrow();
 }
 function clearDraft(conv){
   try{ localStorage.removeItem(draftKey(conv||S.conv)); }catch(e){}
@@ -560,7 +580,14 @@ document.querySelectorAll("#empty .sug[data-s]").forEach(b=>{ b.onclick=()=>send
 const IMG_MAX_EDGE=1568, IMG_KEEP_BYTES=300*1024;
 function addImageFile(f){
   if(!f || !(f.type||"").startsWith("image/")) return;
-  compressImage(f).then(im=>{ S.images.push(im); renderThumbs(); });
+  const conv=S.conv;
+  compressImage(f).then(im=>{
+    if(S.conv===conv){ S.images.push(im); saveComposerAttachments(conv); renderThumbs(); }
+    else{
+      const attachments=S.composerAttachments[conv]||(S.composerAttachments[conv]={});
+      (attachments.images||(attachments.images=[])).push(im);
+    }
+  });
 }
 async function compressImage(f){
   const raw=await new Promise((res,rej)=>{ const rd=new FileReader(); rd.onload=()=>res(rd.result); rd.onerror=rej; rd.readAsDataURL(f); });
@@ -1366,7 +1393,7 @@ window.vococoKeyboard = (()=>{
       if(!modal() && !visible(convMenuEl) && ((!chat() && !$("#sidebar").classList.contains("open")) || (editable(e.target) && e.target!==$("#ta") && !(typeof FIND!=="undefined" && FIND.open)))) return;
       if(e.repeat){ e.preventDefault(); e.stopImmediatePropagation(); return; }
       const closed=escapeLayer();
-      if(!closed && chat() && !S.stopping?.[S.conv]) void stopReply();
+      if(!closed && (chat() || (S.surface==="call" && visible($("#messages")))) && !S.stopping?.[S.conv]) void stopReply();
       e.preventDefault(); e.stopImmediatePropagation(); return;
     }
     if(e.key==="Enter" && e.repeat){ e.preventDefault(); e.stopImmediatePropagation(); return; }

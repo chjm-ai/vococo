@@ -645,6 +645,7 @@ class WebAdapter:
         self._send_pending: dict[tuple[str, str], tuple[str, asyncio.Task]] = {}
         self._runner: web.AppRunner | None = None
         self._cancel_callback: Callable[[str], bool] | None = None
+        self.voice_turn_lock = None
         self._cancel_and_wait_callback: Callable[[str], Awaitable[tuple[bool, bool]]] | None = None
         self._model_switch_callback: Callable[[str, str], None] | None = None
         # 进程本次启动的标识:重启后这个值必变。前端拿它跟上次记住的值比对——
@@ -965,10 +966,16 @@ class WebAdapter:
         return _WebSink(self, str(chat_id))
 
     async def present_choice(self, chat_id: int | str, choice: Choice) -> None:
+        from ...memory import chats
+
+        conv = str(chat_id)
+        is_chat = chats.mode(config.resolve_session_key("web", conv)) == "chat"
         self._emit(
             {
-                "conv": str(chat_id),
+                "conv": conv,
                 "type": "choice",
+                "chat_mode": is_chat,
+                "clarify_id": choice.clarify_id,
                 "prompt": choice.prompt,
                 "options": [[cmd, label] for cmd, label in choice.options],
             }
@@ -1000,6 +1007,8 @@ class WebAdapter:
         from ...memory import notices
 
         try:
+            if choice.clarify_id:
+                return notices.by_clarify(choice.clarify_id)
             parts = choice.options[0][0].split()
             return notices.by_clarify(parts[1]) if parts[0] == "/clarify" else None
         except (IndexError, AttributeError):
@@ -1432,6 +1441,12 @@ class WebAdapter:
         # 同时立刻异步起模型总结(不等 AI 首轮回复——那可能跑很久,侧边栏不能干等)
         if not is_command(text) and conv != "main":
             session_key = config.resolve_session_key("web", conv)
+            if session_store.get_title(session_key) == "新聊天":
+                from ...memory import chats
+
+                if chats.mode(session_key) == "chat":
+                    session_store.set_title(session_key, " ".join(text.split())[:40] or "新聊天")
+                    self._emit({"conv": conv, "type": "title", "title": session_store.get_title(session_key)})
             placeholder = session_store.ensure_title(session_key, text)
             if placeholder and not (agy_trial_model or agy_trial.is_trial_model(session_store.get_chosen_model(session_key))):
                 asyncio.create_task(
@@ -3091,7 +3106,7 @@ class WebAdapter:
         from ...memory import chats
 
         try:
-            return web.json_response({"chats": chats.recent(request.query.get("agent_id", "general"))})
+            return web.json_response({"chats": chats.recent(request.query.get("agent_id", "general"), active=self._live.keys())})
         except ValueError as exc:
             return web.json_response({"error": str(exc)}, status=400)
 
@@ -4005,7 +4020,7 @@ class WebAdapter:
         from ...memory import notices
         from .. import notice_actions
 
-        from ...memory import agents
+        from ...memory import agents, chats
 
         from .. import clarify
 
@@ -4022,11 +4037,13 @@ class WebAdapter:
                     agent = agents.agent_for_session(n["session_key"])
                 except Exception:  # noqa: BLE001
                     agent = None
+            is_chat = chats.mode(n["session_key"]) == "chat"
             items.append({
                 "id": n["id"], "ts": n["ts"], "kind": n["kind"], "status": n["status"],
                 "prompt": n["prompt"], "options": n["options"], "reason": n["reason"],
                 "clarify_id": n["clarify_id"] if n["status"] == "pending" else None,
-                "conv": conv,
+                "conv": conv, "chat_mode": is_chat,
+                "agent_id": session_store.session_binding(n["session_key"]).get("agent_id") if is_chat else None,
                 "title": (agent["name"] if agent else None)
                 or session_store.get_title(n["session_key"]) or (conv or n["session_key"]),
             })
@@ -4286,7 +4303,7 @@ class WebAdapter:
         if config.VOICE_ENABLED:  # 实验性语音伴聊模式,见 vococo/voice/
             from ...voice import register_routes as _voice_register_routes
 
-            _voice_register_routes(app, prepare_message=self._prepare_message)
+            _voice_register_routes(app, prepare_message=self._prepare_message, turn_lock=self.voice_turn_lock)
         # F11 重启自愈(统一后台任务引擎,原来叫「语音任务板」)只能挂在这里(serve
         # 真正启动的唯一路径),不能挂在 register_routes 里——否则测试/脚本组建 app
         # 也会触发孤儿回收,误杀别的进程里正在跑的任务(2026-07-12 "假失败"事故

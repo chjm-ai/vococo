@@ -684,6 +684,9 @@ function retryLabel(rt){
 }
 // 有真实进展(正文/思考/工具)进来 = 那次重试已经过去,清掉重试状态回归常规文案
 function clearUpstreamRetry(s){ if(s && s.retry) s.retry=null; }
+function hasStartedChatReply(){
+  return (S.live[S.conv]||[]).some(e=>e.type==="start");
+}
 function renderStatus(){
   if(!S.stream) return;
   const t=S.stream.tools, hasBody=Object.values(S.stream.segs).some(segment=>!!segment.dataset.raw);
@@ -696,11 +699,12 @@ function renderStatus(){
   // 没动静。没有这层,连续重试几分钟就是干转的「思考中」,用户以为卡死了(2026-10-15)。
   const rt=S.stream.retry, rl=rt?retryLabel(rt):"";
   const label = S.stream.audioPending ? "音频转写中" : (rl || (working ? "工作中" : "思考中"));
-  const status=S.stream.status, signature=JSON.stringify([label,tick,!!rl]);
+  const stop=S.surface!=="call" || hasStartedChatReply();
+  const status=S.stream.status, signature=JSON.stringify([label,tick,!!rl,stop]);
   if(status._renderSignature===signature) return;
   status._renderSignature=signature;
   status.innerHTML = '<span class="chip live'+(rl?' warn':'')+'">'+esc(label)+DOTS+esc(tick)+'</span>'
-    + '<button type="button" class="statusstop" title="停止回复" aria-label="停止回复"><span class="sq"></span></button>';
+    + (stop ? '<button type="button" class="statusstop" title="停止回复" aria-label="停止回复"><span class="sq"></span></button>' : "");
 }
 function discardStream(){
   const stream=S.stream;
@@ -779,10 +783,17 @@ function markLive(){
   const sig=Object.keys(S.live).sort().join(",");
   if(sig===_liveSig) return;
   _liveSig=sig; scheduleConvsRender();
+  window.refreshChatHistoryBadges?.();
 }
 function flushHistoryRefresh(conv, required=false){
   if(conv!==S.conv || S.stream) return;
   if(required || S.historyRefreshPending?.[conv]) reloadHistory();
+}
+function deferCallTerminal(e){
+  if(S.surface!=="call" || S.conv!==e.conv || S.histLoading!==e.conv) return false;
+  // 历史请求可能在终态落库前已发出；加载结束后再核对，避免只剩旧草稿。
+  (S.historyRefreshPending||(S.historyRefreshPending={}))[e.conv]=true;
+  return true;
 }
 function handleEvent(e){
   taskTree.event(e);
@@ -795,6 +806,7 @@ function handleEvent(e){
     delete S.live[e.conv]; delete S.streamSnap[e.conv]; markLive();
     delete S.histCache[e.conv]; idbDel("hist:"+e.conv);
     delete S.pendingChoice[e.conv];
+    if(deferCallTerminal(e)){ flushPending(e.conv); return; }
     if(e.conv===S.conv) finalizeStream();
     flushHistoryRefresh(e.conv);
     flushPending(e.conv);
@@ -833,7 +845,7 @@ function handleEvent(e){
   // 说明服务端已完成 _ingest 并入队，可作为这条 POST 的可靠成功确认。
   if(e.type==="user" && e.client_request_id) acknowledgeSend(e.client_request_id);
   // 后台标题总结完成 → 刷新侧边栏/标题栏(loadConvs 会顺带同步顶栏标题),无论前后台会话
-  if(e.type==="title"){ loadConvs(); return; }
+  if(e.type==="title"){ window.updateCallChatTitle?.(e); loadConvs(); return; }
   if(e.type==="video_preview"){ onVideoPreviewReady(e); return; }
   if(typeof window.onChatGatewayEvent==="function" && window.onChatGatewayEvent(e)) return;
   // 非 web 入口(cron/语音任务等)驱动的会话有新动静,见 core/task_events.py 主事件桥:
@@ -931,8 +943,12 @@ function handleEvent(e){
   }
 
   if(e.conv!==S.conv){ // 别的会话在后台的事件 → 不打断当前视图(已缓冲,圆点已更新)
-    // 审批发给非当前会话:直接弹出全屏确认窗,不让用户漏掉
-    if(e.type==="choice"){ S.pendingChoice[e.conv]=e; openChoiceModal(e.conv, e); return; }
+    if(e.type==="choice"){
+      S.pendingChoice[e.conv]=e;
+      if(e.chat_mode) window.refreshChatHistoryBadges?.();
+      else openChoiceModal(e.conv, e);
+      return;
+    }
     // 该会话这一轮结束了 → 之前暂存的审批已作废,清掉
     if(e.type==="done"||e.type==="message"){ delete S.pendingChoice[e.conv]; }
     if(e.type==="done") flushPending(e.conv);  // 后台会话任务完成 → 补发其待发送队列
@@ -940,6 +956,7 @@ function handleEvent(e){
   }
   // 当前会话本轮结束 → 清掉可能残留的暂存审批
   if(e.type==="done"||e.type==="message") delete S.pendingChoice[e.conv];
+  if(e.type==="done" && deferCallTerminal(e)){ flushPending(e.conv); return; }
   if(STREAMY.indexOf(e.type)>=0){
     // histLoading 窗口内:上面已 bufPush 缓冲过,这里不直接建气泡——避免跟 openConv 里
     // /history 铺出来的草稿气泡各建一个,等 maybeReplayStream 统一从缓冲重放一次收尾。
@@ -989,7 +1006,12 @@ function handleEvent(e){
         else setRateStatus("err", "", e.text);
       }
       loadConvs(); flushHistoryRefresh(e.conv); flushPending(e.conv); break;
-    case "choice": delete S.pendingChoice[e.conv]; renderChoice(e); break;
+    case "choice":
+      if(e.chat_mode) S.pendingChoice[e.conv]=e;
+      else delete S.pendingChoice[e.conv];
+      if(S.histLoading!==e.conv || !e.chat_mode) renderChoice(e);
+      window.refreshChatHistoryBadges?.();
+      break;
   }
 }
 // 创建一个"已执行 N 条命令"可展开折叠组,内放 toolCards
@@ -1058,7 +1080,7 @@ function applyStreamEvent(e){
     case "start":
       if(S.audioLoading){ S.audioLoading.remove(); S.audioLoading=null; }
       if(S.stream) S.stream.audioPending = false;  // 转写完成,状态行恢复正常文案
-      ensureStream(e._t0); break;
+      ensureStream(e._t0); renderStatus(); break;
     case "thinking": { const s=ensureStream(); s.thinktog.style.display="flex"; s.think.textContent=e.text; renderStatus(); break; }
     case "text": { const s=ensureStream(); const d=segDiv(s, e.seg); d.dataset.raw=e.text; renderSeg(d); syncDraftTail(s); if(s.activeCard){ foldToGroup(s, s.activeCard); s.activeCard=null; s.tgroup=null; s.toolCount=0; } renderStatus(); break; }
     case "tool_start": { const s=ensureStream();
@@ -1193,11 +1215,15 @@ function settleChoice(id){
   for(const [conv,e] of Object.entries(S.pendingChoice)){
     if(choiceId(e)===id) delete S.pendingChoice[conv];
   }
+  window.refreshChatHistoryBadges?.();
   const modal=$("#choiceModal");
   if(modal && modal.dataset.clarifyId===id) modal.hidden=true;
-  document.querySelectorAll(".choice[data-clarify-id]").forEach(box=>{
-    if(box.dataset.clarifyId===id) box.querySelectorAll("button").forEach(btn=>btn.disabled=true);
-  });
+  const roots=[document, ...Object.values(S.streamSnap||{}).map(snap=>snap.state.row)];
+  for(const root of roots){
+    root.querySelectorAll(".choice[data-clarify-id]").forEach(box=>{
+      if(box.dataset.clarifyId===id) box.querySelectorAll("button").forEach(btn=>btn.disabled=true);
+    });
+  }
 }
 // 跨会话审批/确认:弹出全屏 modal,显示会话标题、问题内容和可点选项
 function openChoiceModal(conv, e){
@@ -1244,9 +1270,11 @@ document.addEventListener("keydown", ev=>{
   if(ev.key==="Escape" && m && !m.hidden) m.hidden=true;
 });
 function renderChoice(e){
-  if(_settledChoices.has(choiceId(e))) return;
+  const id=choiceId(e), conv=e.conv;
+  if(_settledChoices.has(id)) return;
+  if(id && Array.from($("#wrap").querySelectorAll(".choice[data-clarify-id]")).some(box=>box.dataset.clarifyId===id)) return;
   const box=el("div","choice");
-  box.dataset.clarifyId=choiceId(e);
+  box.dataset.clarifyId=id;
   const opts=el("div","opts"); box.append(opts);
   const btns=[];
   e.options.forEach(([cmd,label],i)=>{
@@ -1255,9 +1283,13 @@ function renderChoice(e){
     const num=el("span","num"); num.textContent=(i+1)+".";
     const lbl=el("span","lbl"); lbl.textContent=label;
     btn.append(arw,num,lbl);
-    btn.onclick=()=>{
+    btn.onclick=async ()=>{
       btns.forEach(b=>{ b.disabled=true; if(b!==btn) b.classList.add("dimmed"); });
-      btn.classList.add("selected"); sendCmd(cmd);
+      btn.classList.add("selected");
+      if(await sendCmd(cmd, conv) && e.chat_mode && cmd.endsWith(" other")){
+        e.awaitingText=true;
+        if(S.conv===conv) $("#ta").focus();
+      }
     };
     opts.append(btn); btns.push(btn);
   });
