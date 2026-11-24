@@ -846,6 +846,46 @@ async def test_remote_approval_precedes_full_and_permanent_rules(client, monkeyp
     assert background.call_args.args[3:5] == (None, key)
 
 
+@pytest.mark.parametrize("enabled", [None, False, True, "true"])
+async def test_remote_lark_opt_in_is_limited_to_feishu(client, monkeypatch, enabled):
+    task = await create(client)
+    if enabled is not None:
+        path = config.DATA_DIR / "instance_config.json"
+        path.write_text(json.dumps({"version": 1, "approvals": {"lark_cli_auto_allow": enabled}}))
+    monkeypatch.setattr(danger, "_approve_background", AsyncMock(return_value=False))
+    work = config.DATA_DIR.parent / "work"
+    work.mkdir()
+    (work / "outside.md").symlink_to(work.parent / "outside.md")
+    cwd = danger.set_cwd(str(work))
+    token = danger.set_task_session(tasks.session_key(task["id"]))
+    try:
+        async def bash(command):
+            return await danger.pretool_guard_hook(
+                {"tool_name": "Bash", "tool_input": {"command": command}}, None, {})
+
+        assert await bash("lark-cli --help 2>&1 | head -60") == {}
+        for command in ("lark-cli docs +fetch --doc abc", "lark-cli docs +update --doc abc --content '甲;乙'",
+                        "lark-cli docs +create --content @draft.md", "lark-cli drive +download --output ./file.pdf",
+                        "lark-cli --profile team drive file delete --file-token abc --yes"):
+            assert (await bash(command) == {}) is (enabled is True)
+        assert await danger.require_approval("写入飞书文档", "{}", immutable_tool="lark_document") is (enabled is True)
+        for command in ("git push origin main", "lark-cli docs +fetch --doc abc; git push origin main",
+                        "lark-cli docs +fetch --doc abc | tee ./out", "lark-cli --profile work auth revoke",
+                        "lark-cli drive +download --output ../outside.pdf", "lark-cli drive +upload --file .env",
+                        "lark-cli docs +create --content @outside.md", 'lark-cli docs +fetch --doc "$TARGET"'):
+            assert (await bash(command))["hookSpecificOutput"]["permissionDecision"] == "deny"
+        replay = danger.approval_replay.set(danger.ApprovalReplay("old-session", 10, "old-operation"))
+        try:
+            assert not await danger.require_approval("写入飞书文档", "{}", immutable_tool="lark_document")
+        finally:
+            danger.approval_replay.reset(replay)
+        decisions = [row["decision"] for row in approvals.list_audit()]
+        assert decisions.count("lark_policy") == (6 if enabled is True else 0)
+    finally:
+        danger.reset_task_session(token)
+        danger.reset_cwd(cwd)
+
+
 async def test_remote_approval_uses_turn_access_and_fails_closed(client, monkeypatch):
     key = session()
     session_store.start_turn(key, "远程轮次", source_access={"mode": "standard", "remote_brain": True})

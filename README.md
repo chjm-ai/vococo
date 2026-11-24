@@ -87,6 +87,7 @@ Bash 与同步子代理使用正常系统网络和命令，不再注入业务沙
 | 分组 | 内容 |
 |---|---|
 | `brain` | `agent_id`：任务桥绑定的 Agent；`origin`：MCP 的 HTTPS 来源地址 |
+| `approvals` | `lark_cli_auto_allow: true`：预授权单条、不拼接其他 shell 操作的 `lark-cli` 业务命令及文档便捷工具；包括远程派发和定时任务，默认关闭 |
 | `publishing` | `share_origin`：分享地址；`kimmy`：SSH 主机、发布目录、域名和部署脚本校验契约 |
 | `preferences` | `persona`、`memory_sections`、`memory_rules`（`{dir}` 为记忆目录）、`decision_rules`、`people_folders` |
 | `mcp` | `task_keywords`：工具名到关键词列表；`groups`：组名到工具名列表，`"all"` 表示所有已注册外部 MCP |

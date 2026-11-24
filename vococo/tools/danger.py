@@ -899,7 +899,14 @@ def _local_install_words(words: list[str], cwd: Path) -> bool:
     return bool(re.fullmatch(r"python[\d.]*", binary.name) and words[1:4] == ["-m", "pip", "install"])
 
 
+_INSTALL_OUTPUT_PREVIEW = re.compile(
+    r"[ \t]+(?:2>&1[ \t]+)?\|[ \t]*(?:head|tail)[ \t]+(?:-[0-9]+|-n[ \t]+[0-9]+)[ \t]*\Z"
+)
+
+
 def _project_dependency_install(command: str, cwd: str | None) -> bool:
+    # 只裁剪日志预览，不放宽安装器、路径或其他管道的条件。
+    command = _INSTALL_OUTPUT_PREVIEW.sub("", command)
     if not cwd or re.search(r"[$`<>|&;\n]", command.replace("&&", "")):
         return False
     base = Path(cwd).expanduser().resolve()
@@ -1274,16 +1281,76 @@ def _deny_workflow() -> dict:
     )
 
 
-def _lark_discovery(args: list[str]) -> bool:
-    """仅豁免本地能力发现，不维护远端功能白名单。"""
-    args = list(args)
+def _lark_without_profile(args: list[str]) -> list[str] | None:
     while args and args[0].startswith("--profile"):
         if args[0] == "--profile" and len(args) > 1:
-            del args[:2]
+            args = args[2:]
         elif args[0].startswith("--profile="):
-            del args[0]
+            args = args[1:]
         else:
+            return None
+    return args
+
+
+_LARK_LITERAL_WORD = r"""(?:[\w./:=+%,@-]|'[^'\x00]*'|"[^"$`\\!\x00]*"|\\')+"""
+_LARK_LITERAL_COMMAND = re.compile(rf"[ \t]*lark-cli(?:[ \t]+{_LARK_LITERAL_WORD})+[ \t]*")
+
+
+_LARK_FILE_OPTIONS = {"--file", "--output", "-o", "--path", "--input", "--dir", "--output-dir", "--source"}
+
+
+def _lark_local_file_allowed(value: str) -> bool:
+    cwd = current_cwd()
+    if not cwd or not value or value == "-":
+        return False
+    try:
+        target = (Path(cwd) / Path(value).expanduser()).resolve()
+        policy = _business_policy(cwd)
+        roots = (Path(cwd), *policy.writable_roots) if policy else (Path(cwd),)
+        if any(part.casefold() in {".git", ".npmrc", ".pypirc", ".netrc", "credentials.json"}
+               or part.casefold().startswith(".env") for part in target.parts):
             return False
+        return (not _AGENT_JSON_RE.search(str(target)) and not _SENSITIVE_READ_TARGET.search(str(target))
+                and any(target.is_relative_to(Path(root).expanduser().resolve()) for root in roots))
+    except (OSError, ValueError, RuntimeError):
+        return False
+
+
+def _lark_file_args_allowed(args: list[str]) -> bool:
+    for i, word in enumerate(args):
+        option, equals, value = word.partition("=")
+        if option in _LARK_FILE_OPTIONS:
+            value = value if equals else (args[i + 1] if i + 1 < len(args) else "")
+            # 原生 API 的 multipart 参数可写成 field=path；字段名不能吃掉一段目录。
+            if option == "--file" and (field := re.fullmatch(r"[\w-]+=(.+)", value)):
+                value = field[1]
+            if not _lark_local_file_allowed(value):
+                return False
+        elif word.startswith("-o") and not word.startswith("--") and len(word) > 2:
+            if not _lark_local_file_allowed(word[2:]):
+                return False
+        elif (reference := (value if equals else word)).startswith("@"):
+            if not _lark_local_file_allowed(reference[1:]):
+                return False
+    return True
+
+
+def _lark_business_command(command: str) -> bool:
+    """实例免批只承认单条字面 CLI 调用，不给任意 shell 拼接借权。"""
+    if not _LARK_LITERAL_COMMAND.fullmatch(command):
+        return False
+    args = _lark_without_profile(shlex.split(command)[1:])
+    if not args or args[0].startswith("-") or args[0].casefold() in {"auth", "config", "profile", "update"}:
+        return False
+    return (not _SENSITIVE_READ_TARGET.search(command) and not _SECRET_VAR_RE.search(command)
+            and _lark_file_args_allowed(args))
+
+
+def _lark_discovery(args: list[str]) -> bool:
+    """仅豁免本地能力发现，不维护远端功能白名单。"""
+    args = _lark_without_profile(args)
+    if args is None:
+        return False
     if not args or args in (["--version"], ["-v"]):
         return True
     if args[-1] in {"--help", "-h"}:
@@ -1312,17 +1379,23 @@ def _lark_stage_requires_approval(stage: list[str], depth: int) -> bool:
     return bool(script and _lark_requires_approval(script, depth + 1))
 
 
+_LARK_STDERR_REDIRECT = re.compile(
+    r"""'[^']*'|"(?:\\[\s\S]|[^"\\])*"|\\[\s\S]|(?P<stderr>[ \t]2>(?:&1|/dev/null))(?=[ \t\r\n;|&)]|\Z)"""
+)
+
+
 def _lark_requires_approval(command: str, depth: int = 0) -> bool:
-    """全域原生调用走统一审批，未知/新增命令也不静默放行。"""
+    """发现实际飞书调用；本地帮助不因丢弃/合并 stderr 被误判。"""
     command = _strip_inert_text(command)
     if "lark-cli" not in command:
         return False
     # 不尝试把任意 shell 解释成安全子集；有动态执行时保守审批。
     if depth > 4 or "$(" in command or "`" in command:
         return True
+    view = _LARK_STDERR_REDIRECT.sub(lambda m: " " if m.lastgroup == "stderr" else m[0], command)
     return any(
         _lark_stage_requires_approval(stage, depth)
-        for statement in _shell_commands_tolerant(command)
+        for statement in _shell_commands_tolerant(view)
         for stage in _pipeline_stages(statement)
     )
 
@@ -1630,8 +1703,9 @@ def _take_replay(key: str, operation_key: str | None, receipt: ApprovalReceipt |
     return True
 
 
-async def _approve_remote_brain(reason: str, detail: str, tool: str, done, operation_key, receipt) -> bool | None:
-    """远程来源不能借用本机完全访问、永久规则或交互上下文。"""
+async def _approve_source_policy(reason: str, detail: str, tool: str, done, operation_key, receipt,
+                                 lark_scoped: bool) -> bool | None:
+    """远程来源不能借用本机权限；实例可以显式给飞书单独预授权。"""
     try:
         from ..core import tasks
         from ..memory import session_store
@@ -1641,6 +1715,11 @@ async def _approve_remote_brain(reason: str, detail: str, tool: str, done, opera
         task_id = tasks.task_id_from_session_key(key)
         task = tasks.get(task_id) if task_id else None
         task_access = tasks.automatic_access(task) if task else {}
+        # 旧铃铛续跑仍绑定原操作，不能用后来开启的预授权替换它。
+        if (lark_scoped and approval_replay.get() is None
+                and not any(_is_group_session(source.get("session") or "") for source in (access, task_access))
+                and _lark_policy_allows(key)):
+            return done("lark_policy", True)
         if not (access.get("remote_brain") or task_access.get("remote_brain")):
             return None
         if not key:
@@ -1652,6 +1731,17 @@ async def _approve_remote_brain(reason: str, detail: str, tool: str, done, opera
         return done("remote_check_error", False)
 
 
+def _lark_policy_allows(session_key: str) -> bool:
+    if not session_key or _is_group_session(session_key):
+        return False
+    from ..instance_config import section
+
+    try:
+        return section("approvals").get("lark_cli_auto_allow") is True
+    except (OSError, ValueError):
+        return False
+
+
 async def _approve(
     reason: str,
     detail: str,
@@ -1661,6 +1751,7 @@ async def _approve(
     rule: tuple[str, str, str] | None = None,
     operation_key: str | None = None,
     receipt: ApprovalReceipt | None = None,
+    lark_scoped: bool = False,
 ) -> bool:
     """审批底座:有交互通道 → 弹「允许一次 / 本次会话都允许 / [永远允许] / 拒绝」并阻塞等。
 
@@ -1678,9 +1769,9 @@ async def _approve(
         _audit(tool, "escalate", reason, detail, decision)
         return ok
 
-    remote = await _approve_remote_brain(reason, detail, tool, done, operation_key, receipt)
-    if remote is not None:
-        return remote
+    source_decision = await _approve_source_policy(reason, detail, tool, done, operation_key, receipt, lark_scoped)
+    if source_decision is not None:
+        return source_decision
 
     # 完全访问档(会话或所属 Agent 开了,见 core/permissions.py):免批放行,照样留审批记录。
     # 前台/后台/cron 一视同仁——后台任务半夜卡在「待批」正是这个档位要解决的。
@@ -1885,9 +1976,11 @@ async def _ask_approval(
 ) -> bool:
     """PreToolUse 审批闸调用的入口:把工具入参渲染成一行说明后走 _approve。"""
     rule = _rule_target(tool_name, tool_input, reason, current_cwd())
+    lark_scoped = (tool_name == "Bash" and _category(reason) == "lark_data"
+                   and _lark_business_command(tool_input.get("command") or ""))
     return await _approve(
         reason, _describe(tool_name, tool_input), restrict_noninteractive,
-        tool=tool_name, rule=rule,
+        tool=tool_name, rule=rule, lark_scoped=lark_scoped,
     )
 
 
@@ -1900,7 +1993,8 @@ async def require_approval(
     # 只有调用方能保证详情包含完整、不可变的待执行参数时，才允许补批复用。
     operation_key = hashlib.sha256(f"{immutable_tool}\0{reason}\0{detail}".encode()).hexdigest() if immutable_tool else None
     return await _approve(reason, detail, restrict_noninteractive, tool="(内置工具)",
-                          operation_key=operation_key, receipt=receipt)
+                          operation_key=operation_key, receipt=receipt,
+                          lark_scoped=immutable_tool == "lark_document" and reason == "写入飞书文档")
 
 
 async def pretool_guard_hook(input_data, tool_use_id, context):

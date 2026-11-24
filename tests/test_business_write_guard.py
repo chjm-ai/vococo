@@ -161,6 +161,10 @@ def test_business_native_lark_available_without_legacy_redirect(business, monkey
 @pytest.mark.parametrize("command", [
     "lark-cli skills read lark-doc",
     "lark-cli --help",
+    "lark-cli --help 2>&1 | head -60",
+    "command -v lark-cli && lark-cli docs --help 2>&1 | head -60",
+    "lark-cli skills read lark-doc 2>&1 | grep update",
+    "lark-cli --version 2>/dev/null | head -1",
     "lark-cli docs --help",
     "lark-cli whiteboard +update --help",
     "lark-cli schema drive.files.list",

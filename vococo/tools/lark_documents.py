@@ -234,8 +234,8 @@ async def execute(args: dict) -> dict:
 lark_document = tool(
     "lark_document",
     "飞书文档便捷工具（保留兼容，不代表飞书完整能力）。也可直接通过 Bash 使用官方 lark-cli，"
-    "以 lark-cli --help、<domain> --help、schema、skills read 按需发现全部原生能力；实际调用统一走审批。"
-    "本工具 operation=fetch/create/update/insert_image；写入及上传均需审批，不要反复登录。"
+    "以 lark-cli --help、<domain> --help、schema、skills read 按需发现全部原生能力。"
+    "本工具 operation=fetch/create/update/insert_image；写入及上传按实例预授权和当前权限档位处理，不要反复登录。"
     "content 是直接提供的 Markdown；update 默认追加，支持 str_replace（空字符串删除匹配文字）、"
     "block_insert_after（需 block_id）。局部编辑不要 overwrite，覆盖会丢失资源和评论。"
     "insert_image 传 doc、image_path、block_id（先 fetch with-ids 获取；0开头/-1末尾）、"
