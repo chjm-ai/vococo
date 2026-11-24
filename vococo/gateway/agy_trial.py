@@ -1003,10 +1003,24 @@ async def stream_native(key: str, turn_id: int, model: str, prompt: str, refusal
             denied = set(agents.runtime_for_session(key).get("disallowed_tools") or ())
             native_settings, denied_native, brain_blocked = _native_policy(denied, (*VOCOCO_MCP_READ, *VOCOCO_MCP_WRITE))
             external = []
-            for candidate in agy_tools.external_servers(meta.get("unmapped_vococo_mcp", ()), denied):
-                bridge = await stack.enter_async_context(agy_tools.mount(key, turn_id, cwd, external=candidate))
+            prepared_external = []
+            selected = meta.get("unmapped_vococo_mcp", ())
+            discovery = dict.fromkeys(selected, "not_eligible")
+            for candidate in agy_tools.external_servers(selected, denied):
+                discovery[candidate.name] = "unavailable"
+                bridge = await stack.enter_async_context(
+                    agy_tools.mount(key, turn_id, cwd, external=candidate, discovery=discovery))
                 if bridge:
-                    external.append(bridge)
+                    prepared_external.append((candidate, bridge))
+            if discovery:
+                for candidate, bridge in prepared_external:
+                    if agy_tools.external_is_enabled(key, candidate):
+                        external.append(bridge)
+                    else:
+                        discovery[candidate.name] = "no_longer_enabled"
+                # 本机小文件同步原子替换，避免取消后旧线程覆盖下一轮的清单。
+                reported = agy_handoff.record_external_mcp(Path(cwd), meta, discovery)
+                log.info("AGY 外部 MCP 发现结果: turn_id=%s status=%s", turn_id, reported)
             extra_servers = [bundle["server"], *external] if bundle else external.copy()
             builtin_server = await stack.enter_async_context(agy_tools.mount(key, turn_id, cwd))
             if builtin_server:
@@ -1059,8 +1073,9 @@ async def stream_native(key: str, turn_id: int, model: str, prompt: str, refusal
             tools_note = ("\n本轮可通过 `vococo-web` 工具访问作品库、工作台、飞书和定时任务；"
                           "以工具实际清单及审批回执为准。修改 Git 仓库前使用 prepare_repository 取得会话副本，"
                           "只在它返回的副本路径修改。" if builtin_server else "")
-            if external:
-                tools_note += "\n已随当前 Agent 通过 vococo 代调 MCP：" + "、".join(item["name"] for item in external)
+            if discovery:
+                tools_note += ("\n外部 MCP 以本轮交接文件的 `mounted_external_mcp` 和 `external_mcp_status` 为准。"
+                               "已挂载的工具按实际清单调用；已配置但启动或发现失败的不应解释为没有配置。")
             turn_prompt = f"{_ACP_NOTE}{tools_note}{style_note}{handoff_note}{attachment_note}\n\n用户消息：\n{prompt}"
             attachment_options = {"image_blocks": image_blocks} if image_blocks else {}
 

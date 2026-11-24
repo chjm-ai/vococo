@@ -359,3 +359,28 @@ def test_upstream_sdk_logs_are_hidden_only_inside_bridge(caplog):
         finally:
             agy_tools._private_upstream_io.reset(state)
     assert caplog.messages == ["outside-bridge"]
+
+
+@pytest.mark.anyio
+async def test_external_discovery_reports_connection_failure_without_exception_text(monkeypatch):
+    from contextlib import asynccontextmanager
+
+    @asynccontextmanager
+    async def closed(_):
+        raise RuntimeError("synthetic private upstream detail")
+        yield
+
+    monkeypatch.setattr(agy_tools, "_external_client", closed)
+    external = agy_tools._External("probe", {"type": "stdio", "command": "fixture"}, ())
+    discovery = {}
+    assert await agy_tools._external_tools(external, discovery=discovery) == {}
+    assert discovery == {"probe": "initialize_failed"}
+
+
+def test_public_boolean_filter_is_not_misclassified_as_a_credential():
+    values = agy_tools._upstream_values({"type": "stdio", "env": {
+        "DATAFORSEO_SIMPLE_FILTER": "true", "API_TOKEN": "synthetic-candidate", "AUTH_FILTER_TOKEN": "false",
+    }})
+    assert "true" not in values
+    assert {"false", "synthetic-candidate"} <= set(values)
+    assert agy_tools._scrub_upstream('{"readOnlyHint":true}', values) == '{"readOnlyHint":true}'
