@@ -728,7 +728,7 @@ function setMeta(d){
 // 回落全局默认;等 /voice/sidebar、/cron/sidebar 拉完再按真实 chosen_model 补一遍,
 // 不然模型胶囊会一直显示"另一个模型",直到用户手动切走再切回。只在行对象带
 // chosen_model 时写,不把 S.model 清回空。
-function refillCurrentMeta(){
+function refillCurrentMeta(refreshUsage=false){
   const conv=S.conv;
   if(!conv || isDraftConv(conv)) return;
   const c=S.convs.find(x=>x.conv===conv)
@@ -737,7 +737,8 @@ function refillCurrentMeta(){
     || (S.cronJobs||[]).find(x=>x.conv===conv);
   if(!c) return;
   const crossed="engine_segment" in c && c.engine_segment!==(S.meta?.segment??null);
-  if(crossed || !S.meta || (!S.meta.ctx && !S.meta.total)) setMeta(c);
+  const refreshAgy=refreshUsage && c.chosen_model?.startsWith("agy-native:");
+  if(crossed || refreshAgy || !S.meta || (!S.meta.ctx && !S.meta.total)) setMeta(c);
   else if(c.chosen_model) setModel(c.chosen_model);
   if("engine_segment" in c && c.engine_segment!==(S.models.engine_segment??null)) reloadSavedModels(conv);
 }
@@ -1526,7 +1527,7 @@ function renderMeta(){
   pop.innerHTML =
     '<div class="convid"><span class="k">会话 ID</span><span class="idv" title="'+esc(cid)+'">'+esc(cid)+'</span><button class="cpy" id="ctxCopyBtn" title="复制 ID">'+ic("copy")+'</button></div>'+
     (pct==null ? metaRow("上下文窗口", "暂无用量数据", "") : contextDetail(m, win, pct))+
-    (agy ? "" : pct==null ? metaRow("累计消耗", fmtTok(m.total), "") : tokenDetail(m))+
+    (agy ? "" : m.model.startsWith("agy-native:") ? metaRow("累计消耗", fmtTok(m.total), "") : tokenDetail(m))+
     (usedModel ? '<div class="pr sep"><span class="k">模型</span><span class="mdl">'+esc(usedModel)+'</span></div>' : "");
   $("#ctxCopyBtn").onclick = e => { e.stopPropagation(); copyConvId(); };
 }
