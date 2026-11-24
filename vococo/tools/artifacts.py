@@ -5,6 +5,7 @@ import asyncio
 import errno
 import io
 import lzma
+import os
 import stat
 import tarfile
 import zipfile
@@ -66,8 +67,8 @@ def _worktree_root(candidate: Path, session_key: str) -> Path | None:
     current = Path(bound) if bound else None
     runtime = config.DATA_DIR.resolve()
     in_runtime = _inside_protected(candidate, runtime)
-    if any(path != bound and _inside_protected(candidate, Path(path))
-           for path in session_store.all_worktree_paths()):
+    if any(_inside_protected(candidate, Path(path))
+           for path in session_store.all_worktree_paths(excluding_session=session_key)):
         raise ValueError("不允许交付其他会话的工作树文件。")
     if current and candidate.is_relative_to(current):
         if not in_runtime or current.is_relative_to(runtime / "worktrees"):
@@ -114,9 +115,55 @@ def _source_root(candidate: Path, session_key: str, cwd: str) -> Path | None:
                  if not home.is_relative_to(root) and candidate.is_relative_to(root)), None)
 
 
-def _read_source(root: Path, parts: tuple[str, ...]) -> bytes:
+def _directory_rules(root: Path, session_key: str):
+    from .. import config
+    from ..core.repository_cleanup import retained_copy_paths
+    from ..core.worktree import _wt_base, conversation_workspace_path
+    from ..memory import session_store
+
+    workspace = conversation_workspace_path(session_key)
+    repositories = workspace.parent.with_name(".repositories")
+    bound = session_store.get_worktree(session_key)
+    owns_tree = bound is not None and root == Path(bound)
+    runtime = config.DATA_DIR.resolve()
+    yield workspace.parent, root == workspace
+    yield repositories, root.is_relative_to(repositories)  # 已由 _managed_root 校验归属。
+    yield runtime, owns_tree and root.is_relative_to(runtime / "worktrees")
+    for project in session_store.list_projects(include_hidden=True):
+        base = _wt_base(project["path"])
+        yield base, owns_tree and root.is_relative_to(base)
+    for path in session_store.all_worktree_paths(excluding_session=session_key):
+        yield Path(path), False
+    # 先查现有绑定，再读删除前落盘的保留记录，避免会话在两次读取之间被删除。
+    for path in retained_copy_paths():
+        yield path, False
+
+
+def _directory_guard(root: Path, session_key: str):
+    rules: dict[tuple[int, int], Path | None] = {}
+    for path, allowed in _directory_rules(root, session_key):
+        try:
+            info = path.stat()
+        except (FileNotFoundError, NotADirectoryError):
+            continue
+        identity = (info.st_dev, info.st_ino)
+        permitted = path if allowed else None
+        if rules.setdefault(identity, permitted) != permitted:
+            rules[identity] = None
+
+    def check(path: Path, fd: int) -> None:
+        # 按实际打开的目录身份检查，路径的 Unicode、大小写或挂载别名不扩大授权。
+        info = os.fstat(fd)
+        identity = (info.st_dev, info.st_ino)
+        if identity in rules and rules[identity] != path:
+            raise ValueError("不允许交付其他会话的私有目录或运行数据文件。")
+
+    return check
+
+
+def _read_source(root: Path, parts: tuple[str, ...], session_key: str) -> bytes:
     try:
-        return read_regular(root, parts, MAX_BYTES)
+        return read_regular(root, parts, MAX_BYTES, check_directory=_directory_guard(root, session_key))
     except OSError as exc:
         if exc.errno in {errno.ELOOP, errno.ENOTDIR}:
             raise ValueError("不接受软链或无效目录。") from exc
@@ -230,7 +277,7 @@ def _snapshot(path: str, session_key: str, cwd: str) -> tuple[str, bytes]:
                 raise ValueError("请选择文件，不能交付目录本身。")
             _check_parts(parts)
             _check_key_container(candidate.name)
-            data = _read_source(root, parts)
+            data = _read_source(root, parts, session_key)
             _check_secrets(data)
             _check_unsupported_archive(candidate.name, data)
             if candidate.suffix.lower() in ARCHIVES or data.startswith(b"PK\x03\x04") or _is_zip(data):

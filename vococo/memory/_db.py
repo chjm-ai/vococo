@@ -23,7 +23,8 @@ CREATE TABLE IF NOT EXISTS turns(
   ts REAL NOT NULL,
   user_text TEXT NOT NULL,
   assistant_text TEXT NOT NULL,
-  draft_text TEXT NOT NULL DEFAULT ''
+  draft_text TEXT NOT NULL DEFAULT '',
+  in_progress INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_turns_session ON turns(session_key, id);
 CREATE TABLE IF NOT EXISTS artifacts(
@@ -248,6 +249,11 @@ def conn() -> sqlite3.Connection:
         # 迁移:turns 增 events 列 —— 该轮的过程时间线(文字段+工具调用)JSON,
         # 供前端刷新后完整重建"工具卡与文字交错"的画面;老行为 NULL(只有纯文本)。
         tcols = {r[1] for r in _DB.execute("PRAGMA table_info(turns)")}
+        if "in_progress" not in tcols:
+            with _DB:
+                _DB.execute("ALTER TABLE turns ADD COLUMN in_progress INTEGER NOT NULL DEFAULT 0")
+                # 老进程没有显式状态：沿用原来的空正文判断，让重启恢复流程收尾。
+                _DB.execute("UPDATE turns SET in_progress=1 WHERE assistant_text=''")
         if "events" not in tcols:
             _DB.execute("ALTER TABLE turns ADD COLUMN events TEXT")
         # draft_text: 流式进行中把"当前已输出的正文"节流写进该列;

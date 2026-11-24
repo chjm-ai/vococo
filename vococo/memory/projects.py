@@ -46,10 +46,11 @@ def upsert_project(path: str) -> dict:
     return {"hash": h, "path": norm, "name": os.path.basename(norm) or norm, "last_used": now}
 
 
-def list_projects() -> list[dict]:
-    """未隐藏的项目,按 sort_order 升序(拖拽排序落库的顺序)。名 = 文件夹名(basename)。"""
+def list_projects(*, include_hidden: bool = False) -> list[dict]:
+    """默认仅列侧栏项目；安全边界仍须认出隐藏项目的受管目录。"""
+    where = "" if include_hidden else " WHERE hidden=0"
     rows = _db.conn().execute(
-        "SELECT hash, path, last_used FROM projects WHERE hidden=0 ORDER BY sort_order ASC, last_used DESC"
+        "SELECT hash, path, last_used FROM projects" + where + " ORDER BY sort_order ASC, last_used DESC"
     ).fetchall()
     return [
         {"hash": h, "path": p, "name": os.path.basename(p) or p, "last_used": ts}

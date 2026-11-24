@@ -910,7 +910,11 @@ function permLeft(until){
   const h=Math.floor(min/60), m=min%60;
   return h ? h+"h"+(m?m+"m":"") : m+"m";
 }
-let permRequest=0;
+let permRequest=0, permSave=0;
+function applyPerm(conv,d){
+  d._conv=conv; S.perm=d; renderPermChip();
+  if(!$("#permPop").hidden) renderPermPop();
+}
 async function refreshPerm(conv){
   if(!conv || S.conv!==conv) return;
   // 切会话、开轮和收尾可能连续拉取，只展示最新请求返回的档位。
@@ -921,8 +925,7 @@ async function refreshPerm(conv){
     if(!r.ok) return;
     const d=await r.json();
     if(S.conv!==conv || request!==permRequest) return;
-    d._conv=conv; S.perm=d; renderPermChip();
-    if(!$("#permPop").hidden) renderPermPop();
+    applyPerm(conv,d);
   }catch(e){}
 }
 function permStatusText(d){
@@ -969,11 +972,17 @@ function pickPerm(id){
   const cur=S.perm && S.perm._conv===conv ? S.perm : null;   // 只认本会话已拉到的状态
   if(mode==="full" && !(cur && cur.mode==="full")
      && !confirm("给本会话开完全访问?\n\nAI 执行 rm -rf、git push、装包、写项目外文件等操作将不再询问你。\n删根/格式化等灾难操作仍会被拦,疑似密钥外带仍会问你。")) return;
+  const save=++permSave;
   api("/conv/perm", {method:"POST", headers:{"Content-Type":"application/json"},
     body:JSON.stringify({conv:conv, mode:mode, hours:hours})})
-    .then(async function(r){ if(!r.ok) throw new Error((await r.json()).error||"设置失败"); })
-    .then(()=>refreshPerm(conv))
-    .catch(function(e){ alert(e.message||"设置失败"); });
+    .then(async function(r){ const d=await r.json(); if(!r.ok) throw new Error(d.error||"设置失败"); return d; })
+    .then(d=>{
+      if(S.conv!==conv || save!==permSave) return;
+      // 先采用保存回执；后继 GET 仅用于同步执行来源，不让网络故障掩盖已保存的设置。
+      applyPerm(conv,d);
+      refreshPerm(conv);
+    })
+    .catch(function(e){ if(S.conv===conv && save===permSave) alert(e.message||"设置失败"); });
 }
 $("#permBtn").onclick=e=>{ e.stopPropagation(); const p=$("#permPop");
   if(p.hidden){ closeComposerPopovers(p); renderPermPop(); p.hidden=false; refreshPerm(S.conv); } else { p.hidden=true; } };

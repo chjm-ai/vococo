@@ -255,15 +255,14 @@ async def test_sw_etag_304_roundtrip(static_app):
 
 
 @pytest.mark.anyio
-async def test_history_etag_304_roundtrip(isolated, monkeypatch):
+async def test_history_etag_304_roundtrip(isolated):
     """/history:重会话 JSON 一包几百 KB,内容没变时必须走 304 空包(切会话大多是回看)。"""
+    from vococo import config
     from vococo.memory import session_store
 
     adapter = WebAdapter()
     adapter._guard = lambda request: None  # 测缓存协商,鉴权不在本测试范围
-    monkeypatch.setattr(
-        session_store, "load_history", lambda key, limit=40: [{"user": "hi", "assistant": "yo"}]
-    )
+    session_store.append(config.resolve_session_key("web", "main"), "hi", "yo")
     app = web.Application()
     app.add_routes([web.get("/history", adapter._handle_history)])
 

@@ -51,9 +51,12 @@ def test_automatic_source_is_reported_only_while_the_turn_is_active(agent_mode):
     assert st["mode"] == "standard" and st["source"] == "automatic_source"
     assert st["session_mode"] == st["agent_mode"] == "full" and st["until"] > time.time()
     assert not permissions.is_full(KEY)
-    session_store.finish_turn(tid, "完成")
+    session_store.finish_turn(tid, "")  # 只交付附件等场景允许没有正文。
     st = permissions.state(KEY)
     assert st["mode"] == "full" and st["source"] == "session"
+    assert not session_store.load_history(KEY)[0]["pending"]
+    assert not session_store.cancel_turn(tid)
+    assert not session_store.recover_interrupted_turns()
 
 
 def test_agent_full_applies(agent_mode):

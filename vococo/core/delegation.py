@@ -82,7 +82,7 @@ def _source(session: str) -> tuple[str, str]:
     remote = session_store.active_source_access(session).get("remote_brain") is True
     try:
         row = session_store._conn().execute(
-            "SELECT id FROM turns WHERE session_key=? AND user_text!='' AND assistant_text='' ORDER BY id DESC LIMIT 1",
+            "SELECT id FROM turns WHERE session_key=? AND user_text!='' AND in_progress=1 ORDER BY id DESC LIMIT 1",
             (session,),
         ).fetchone()
     except Exception:  # noqa: BLE001 —— 远程轮次可能刚收尾,读不到就按无进行中轮次处理

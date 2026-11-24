@@ -18,12 +18,13 @@ def get_worktree(session_key: str) -> str | None:
     return (row[0] if row else None) or None
 
 
-def all_worktree_paths() -> list[str]:
-    """DB 里当前所有会话绑定的 worktree 目录 —— 启动清孤儿时的「有主」白名单。"""
-    rows = _db.conn().execute(
-        "SELECT worktree_path FROM session_meta "
-        "WHERE worktree_path IS NOT NULL AND worktree_path != ''"
-    ).fetchall()
+def all_worktree_paths(*, excluding_session: str | None = None) -> list[str]:
+    """已登记的工作树；附件交付可排除当前会话自己的绑定。"""
+    query = "SELECT worktree_path FROM session_meta WHERE worktree_path IS NOT NULL AND worktree_path != ''"
+    if excluding_session is None:
+        rows = _db.conn().execute(query).fetchall()
+    else:
+        rows = _db.conn().execute(query + " AND session_key!=?", (excluding_session,)).fetchall()
     return [r[0] for r in rows]
 
 

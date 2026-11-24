@@ -1,6 +1,7 @@
 """文件成果真实工具、临时 SQLite、认证下载与来源边界。"""
 import io
 import os
+import unicodedata
 import zipfile
 from pathlib import Path
 from types import SimpleNamespace
@@ -471,6 +472,43 @@ def test_conversation_workspace_rejects_symlink_binding(context):
     private.symlink_to(root, target_is_directory=True)
     with pytest.raises(worktree.WorktreeIsolationError, match="不能经过软链接"):
         worktree.conversation_workspace(key)
+
+
+@pytest.mark.anyio
+async def test_full_cannot_deliver_worktree_left_after_session_deletion(context):
+    from vococo.core import permissions, repository_cleanup
+
+    _, key, _, events, root = context
+    permissions.set_session(key, "full")
+    private = root.parent / "已删除会话的旧副本"
+    private.mkdir()
+    document = private / "notes.txt"
+    document.write_text("保留成果")
+    deleted = "web:deleted"
+    session_store.set_worktree(deleted, str(private))
+    repository_cleanup.record_retained_session(deleted, [{"path": str(private), "removed": False}])
+    session_store.delete_session(deleted)
+    assert session_store.get_worktree(deleted) is None
+    assert "文件保护" in await call(document)
+    assert not events
+
+
+@pytest.mark.anyio
+async def test_full_checks_directory_identity_not_just_path_spelling(context):
+    from vococo.core import permissions
+
+    _, key, _, events, root = context
+    permissions.set_session(key, "full")
+    private = root.parent / "protégé"
+    private.mkdir()
+    document = private / "notes.txt"
+    document.write_text("其他会话成果")
+    session_store.set_worktree("web:other", str(private))
+    alternate = Path(unicodedata.normalize("NFD", str(document)))
+    if not alternate.is_file():
+        pytest.skip("当前文件系统不把这两种 Unicode 拼写识别为同一路径")
+    assert "文件保护" in await call(alternate)
+    assert not events
 
 
 @pytest.mark.anyio
