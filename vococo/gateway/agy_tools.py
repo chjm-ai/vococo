@@ -6,13 +6,15 @@ import contextvars
 import hashlib
 import json
 import logging
+import os
+import re
 import secrets
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from fnmatch import fnmatchcase
 from functools import lru_cache
 from types import SimpleNamespace
-from urllib.parse import urlsplit
+from urllib.parse import parse_qsl, quote, quote_plus, unquote, urlsplit
 
 from aiohttp import web
 from jsonschema import Draft202012Validator
@@ -60,33 +62,103 @@ def _denied(name: str, denied: set[str]) -> bool:
                             "mcp__vococo", f"mcp__{NAME}"), denied)
 
 
-def external_servers(names, denied) -> list[dict]:
-    """只映射已启用的无凭据本机 HTTP MCP。远端凭据/stdio 不交给 AGY。
+@dataclass(frozen=True)
+class _External:
+    name: str
+    spec: dict = field(repr=False)
+    values: tuple[str, ...] = field(repr=False)
 
-    ACP 无法原样继承普通通道的每个外部工具权限；有禁用规则时整组不挂载。
-    """
+
+def _string_map(value) -> bool:
+    return isinstance(value, dict) and all(isinstance(key, str) and isinstance(val, str)
+                                           for key, val in value.items())
+
+
+def _supported_transport(spec: dict) -> bool:
+    if spec.get("type") == "stdio":
+        command, args = spec.get("command"), spec.get("args", [])
+        return (set(spec) <= {"type", "command", "args", "env"} and isinstance(command, str)
+                and bool(command.strip()) and isinstance(args, list) and all(isinstance(v, str) for v in args)
+                and _string_map(spec.get("env", {})))
+    if (spec.get("type") not in ("http", "sse") or set(spec) - {"type", "url", "headers"}
+            or not _string_map(spec.get("headers", {})) or not isinstance(spec.get("url"), str)):
+        return False
+    try:
+        parts = urlsplit(spec["url"])
+        loopback = parts.hostname in ("127.0.0.1", "::1", "localhost")
+        return (bool(parts.hostname) and not parts.fragment and parts.username is None and parts.password is None
+                and not (loopback and parts.port == config.WEB_PORT)
+                and (parts.scheme == "https" or (loopback and parts.scheme == "http")))
+    except ValueError:
+        return False
+
+
+_SENSITIVE_FLAG = re.compile(r"(?i)(?:password|passwd|token|secret|credential|api[-_]?key|authorization)")
+
+
+def _upstream_values(spec: dict) -> tuple[str, ...]:
+    # 这些值仅用于本机过滤。既不进入 ACP MCP 描述，也不进入审批详情。
+    values = set(spec.get("env", {}).values())
+    for name, value in spec.get("headers", {}).items():
+        if name.casefold() not in ("content-type", "accept", "user-agent"):
+            values.add(value)
+            if value.lower().startswith(("bearer ", "basic ")):
+                values.add(value.partition(" ")[2].strip())
+    if spec.get("url"):
+        parts = urlsplit(spec["url"])
+        values.add(spec["url"])
+        if parts.path and parts.path != "/":
+            values.add(parts.path)
+            decoded = unquote(parts.path)
+            values.add(decoded)
+            segments = [part for part in decoded.split("/") if part]
+            for i, part in enumerate(segments):
+                previous_is_key = i > 0 and _SENSITIVE_FLAG.search(segments[i - 1])
+                if previous_is_key or len(part) >= 16 or (len(part) >= 8 and _SENSITIVE_FLAG.search(part)):
+                    values.add(part)
+        values.update(value for _, value in parse_qsl(parts.query))
+    args = spec.get("args", ())
+    for i, arg in enumerate(args):
+        flag, sep, value = arg.partition("=")
+        if flag.startswith("-") and _SENSITIVE_FLAG.search(flag):
+            values.add(value if sep else args[i + 1] if i + 1 < len(args) else "")
+    return tuple(sorted((value for value in values if value), key=lambda value: (-len(value), value)))
+
+
+def _scrub_upstream(text: str, values: tuple[str, ...]) -> str:
+    for value in values:
+        forms = {value, quote(value, safe=""), quote_plus(value, safe=""), json.dumps(value, ensure_ascii=False)[1:-1]}
+        for form in sorted(forms, key=len, reverse=True):
+            if len(form) >= 4:
+                text = text.replace(form, "[凭据已隐藏]")
+            else:
+                text = re.sub(r"(?<![\w-])" + re.escape(form) + r"(?![\w-])", "[凭据已隐藏]", text)
+    return text
+
+
+def external_servers(names, denied) -> list[_External]:
+    """每轮读取已启用且当前 Agent/会话已选择的注册表，不按服务器名硬编码。"""
     from .settings_store import effective_external_mcp
 
     servers = []
     for name, spec in effective_external_mcp(set(names)).items():
         prefix = f"mcp__{name.casefold()}"
-        if (name.casefold().startswith("vococo-") or any(str(rule).casefold().startswith(prefix) for rule in denied)
+        if (not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", name) or name.casefold().startswith("vococo-")
+                or any(str(rule).casefold().startswith(prefix) for rule in denied)
                 or any(str(rule).casefold().startswith("mcp__") and any(ch in str(rule) for ch in "*?[")
                        for rule in denied)):
             continue
-        if spec.get("type") != "http" or set(spec) != {"type", "url"}:
-            continue
-        url = spec["url"]
-        try:
-            parts = urlsplit(url)
-            if (parts.scheme != "http" or parts.hostname != "127.0.0.1" or not parts.port
-                    or parts.port == config.WEB_PORT or not parts.path or parts.query or parts.fragment
-                    or parts.username is not None or parts.password is not None):
-                continue
-        except (ValueError, TypeError, AttributeError):
-            continue
-        servers.append({"type": "http", "name": name, "url": url, "headers": []})
+        if _supported_transport(spec):
+            servers.append(_External(name, spec, _upstream_values(spec)))
     return servers
+
+
+def _still_enabled(session_key: str, external: _External) -> bool:
+    from ..memory import agents, session_store
+
+    runtime = agents.runtime_for_session(session_key)
+    selected = set(runtime.get("mcp") or ()) | session_store.get_external_mcp_names(session_key)
+    return external in external_servers(selected, runtime.get("disallowed_tools") or ())
 
 
 @dataclass
@@ -95,6 +167,8 @@ class _Binding:
     tools: dict
     owner: asyncio.Task
     server_name: str
+    session_key: str
+    external: _External | None = field(default=None, repr=False)
     tasks: set[asyncio.Task] = field(default_factory=set)
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     active: bool = True
@@ -105,7 +179,7 @@ _bindings: dict[str, _Binding] = {}
 
 
 @asynccontextmanager
-async def mount(session_key: str, turn_id: int, workspace: str, *, external=None):
+async def mount(session_key: str, turn_id: int, workspace: str, *, external: _External | None = None):
     from ..memory import agents
     from ..tools import danger
     from .settings_store import vococo_enabled
@@ -116,9 +190,9 @@ async def mount(session_key: str, turn_id: int, workspace: str, *, external=None
         yield None
         return
     denied = set(agents.runtime_for_session(session_key).get("disallowed_tools") or ())
-    server_name = external["name"] if external else NAME
+    server_name = external.name if external else NAME
     if external:
-        tools = await _external_tools(external["url"])
+        tools = await _external_tools(external) if _still_enabled(session_key, external) else {}
     elif vococo_enabled():
         tools = {name: tool for name, tool in _registry().items() if not _denied(name, denied)}
     else:
@@ -129,7 +203,7 @@ async def mount(session_key: str, turn_id: int, workspace: str, *, external=None
     token = secrets.token_urlsafe(32)
     cwd = danger.set_cwd(workspace, project_root=config.project_root_for(session_key))
     try:
-        binding = _Binding(contextvars.copy_context(), tools, asyncio.current_task(), server_name)
+        binding = _Binding(contextvars.copy_context(), tools, asyncio.current_task(), server_name, session_key, external)
     finally:
         danger.reset_cwd(cwd)
     _bindings[token] = binding
@@ -146,43 +220,88 @@ async def mount(session_key: str, turn_id: int, workspace: str, *, external=None
             await asyncio.gather(*running, return_exceptions=True)
 
 
+_private_upstream_io = contextvars.ContextVar("agy_private_upstream_io", default=False)
+
+
+class _UpstreamLogFilter(logging.Filter):
+    def filter(self, record):
+        return not _private_upstream_io.get()
+
+
+# SDK 的异常日志可能包含远端路径或 SSE 会话 URL；只静默此桥当前任务的第三方日志。
+for _logger_name in ("mcp.client.sse", "mcp.client.streamable_http", "mcp.client.stdio", "httpx2",
+                     "httpcore.connection", "httpcore.http11", "httpcore.http2"):
+    logging.getLogger(_logger_name).addFilter(_UpstreamLogFilter())
+
+
 @asynccontextmanager
-async def _external_client(url):
+async def _external_transport(spec: dict):
     from httpx2 import AsyncClient
-    from mcp import ClientSession
+    from mcp.client.sse import sse_client
+    from mcp.client.stdio import StdioServerParameters, stdio_client
     from mcp.client.streamable_http import streamable_http_client
 
-    async with AsyncClient(trust_env=False, timeout=10) as http:
-        async with streamable_http_client(url, http_client=http) as (read, write, *_):
+    def http_client(**kwargs):
+        # SDK MCP 不跨来源跟随重定向；再关闭环境代理，不让认证头借环境转发。
+        return AsyncClient(trust_env=False, **kwargs)
+
+    if spec["type"] == "stdio":
+        # 注册程序不得在 AGY 可写工作区解析相对脚本、启动配置或同名模块。
+        params = StdioServerParameters(command=spec["command"], args=spec.get("args", []),
+                                       env=spec.get("env", {}), cwd=os.path.abspath(os.sep))
+        with open(os.devnull, "w") as errors:
+            async with stdio_client(params, errlog=errors) as streams:
+                yield streams
+    elif spec["type"] == "sse":
+        async with sse_client(spec["url"], headers=spec.get("headers"), httpx_client_factory=http_client) as streams:
+            yield streams
+    else:
+        async with http_client(headers=spec.get("headers"), timeout=10) as http:
+            async with streamable_http_client(spec["url"], http_client=http) as streams:
+                yield streams
+
+
+@asynccontextmanager
+async def _external_client(external: _External):
+    from mcp import ClientSession
+
+    context = _private_upstream_io.set(True)
+    try:
+        async with _external_transport(external.spec) as (read, write, *_):
             async with ClientSession(read, write) as session:
                 await session.initialize()
                 yield session
+    finally:
+        _private_upstream_io.reset(context)
 
 
-def _external_handler(url, name):
-    async def invoke(args):
-        async with asyncio.timeout(45), _external_client(url) as session:
+def _external_handler(external: _External, name: str):
+    async def invoke(args, *, is_current):
+        async with asyncio.timeout(45), _external_client(external) as session:
+            if not is_current():
+                return _result("本轮已结束或工具配置发生变化，操作未执行。", error=True)
             result = await session.call_tool(name, args)
             return result.model_dump(by_alias=True)
     return invoke
 
 
-async def _external_tools(url) -> dict:
+async def _external_tools(external: _External) -> dict:
     from ..tools.danger import redact_secrets
     from .agy_trial import _APPROVAL_SECRET, _AUTH_HEADER
 
     try:
-        async with asyncio.timeout(6), _external_client(url) as session:
+        async with asyncio.timeout(12), _external_client(external) as session:
             result = await session.list_tools()
     except Exception:
         return {}  # 本机可选服务失败，不把未过滤的上游错误带进会话。
     specs = {}
     for tool in result.tools[:80]:
         wire = tool.model_dump_json(by_alias=True)
-        if len(wire) > 16000 or redact_secrets(wire) != wire or _APPROVAL_SECRET.search(wire) or _AUTH_HEADER.search(wire):
+        if (len(wire) > 16000 or redact_secrets(wire) != wire or _APPROVAL_SECRET.search(wire)
+                or _AUTH_HEADER.search(wire) or _scrub_upstream(wire, external.values) != wire):
             continue
         specs[tool.name] = SimpleNamespace(name=tool.name, description=tool.description or "",
-                                          input_schema=tool.input_schema, handler=_external_handler(url, tool.name))
+                                          input_schema=tool.input_schema, handler=_external_handler(external, tool.name))
     return specs
 
 
@@ -229,18 +348,23 @@ async def _invoke(binding: _Binding, name: str, args: dict) -> dict:
     from ..tools import danger
     from .agy_trial import _APPROVAL_SECRET, _AUTH_HEADER
     from .settings_store import vococo_enabled
+    from referencing import Registry
 
     internal = binding.server_name == NAME
     tool = binding.tools[name]
-    schema = {**tool.input_schema, "additionalProperties": False}
-    if not Draft202012Validator(schema).is_valid(args):
-        return _result("参数不符合工具定义。", error=True)
+    if internal:
+        schema = {**tool.input_schema, "additionalProperties": False}
+        if not Draft202012Validator(schema, registry=Registry()).is_valid(args):
+            return _result("参数不符合工具定义。", error=True)
+    # 外部 schema 只用于展示；正则和远程引用由工具自己的服务器处理，不在网关运行。
     detail = json.dumps(args, ensure_ascii=False, sort_keys=True)
-    if (danger.redact_secrets(detail) != detail or _APPROVAL_SECRET.search(detail)
+    values = binding.external.values if binding.external else ()
+    if (danger.redact_secrets(detail) != detail or _scrub_upstream(detail, values) != detail or _APPROVAL_SECRET.search(detail)
             or _AUTH_HEADER.search(detail) or any(token in detail for token in _bindings)):
         return _result("疑似包含凭据，操作未执行。", error=True)
     async with binding.lock:
-        if not _active(binding) or (internal and not vococo_enabled()):
+        if (not _active(binding) or (internal and not vococo_enabled())
+                or (binding.external and not _still_enabled(binding.session_key, binding.external))):
             return _result("本轮已结束或工具已关闭，操作未执行。", error=True)
         read_only = internal and (name in _READ or (name == "lark_document" and args.get("operation") == "fetch"))
         if not read_only:
@@ -261,15 +385,23 @@ async def _invoke(binding: _Binding, name: str, args: dict) -> dict:
                          else await _confirm_external(binding.server_name, name, detail))
             if not confirmed:
                 return _result("未批准，本次操作未执行。", error=True)
-        if not _active(binding):
-            return _result("本轮已结束，操作未执行。", error=True)
-        result = await tool.handler(args)
+        if not _active(binding) or (binding.external and not _still_enabled(binding.session_key, binding.external)):
+            return _result("本轮已结束或工具配置发生变化，操作未执行。", error=True)
+        if binding.external:
+            result = await tool.handler(args, is_current=lambda: (
+                _active(binding) and _still_enabled(binding.session_key, binding.external)))
+        else:
+            result = await tool.handler(args)
     blocks = result.get("content", ()) if isinstance(result, dict) else ()
     raw = "\n".join(block["text"] for block in blocks if isinstance(block, dict)
                     and block.get("type") == "text" and isinstance(block.get("text"), str))
+    if not raw and isinstance(result, dict) and result.get("structuredContent") is not None:
+        raw = json.dumps(result["structuredContent"], ensure_ascii=False)
     if not raw:
         return _result("工具未返回文字结果。", error=True)
-    text = danger.redact_secrets(raw)
+    text = _scrub_upstream(danger.redact_secrets(raw), values)
+    if binding.external:
+        text = _AUTH_HEADER.sub("[凭据已隐藏]", _APPROVAL_SECRET.sub("[凭据已隐藏]", text))
     for token in _bindings:
         text = text.replace(token, "[凭据已隐藏]")
     return _result(text[:MAX_RESULT] + ("\n…结果已截断" if len(text) > MAX_RESULT else ""),
@@ -327,6 +459,8 @@ async def handle(request: web.Request) -> web.Response:
         envelope["result"] = {"protocolVersion": protocol, "capabilities": {"tools": {}},
                               "serverInfo": {"name": binding.server_name, "version": "1"}}
     elif method == "tools/list":
+        if binding.external and not _still_enabled(binding.session_key, binding.external):
+            raise web.HTTPUnauthorized(headers={"Cache-Control": "no-store"})
         envelope["result"] = {"tools": [{"name": tool.name, "description": tool.description, "inputSchema": tool.input_schema}
                                         for tool in binding.tools.values()]}
     elif method == "tools/call" and isinstance(params, dict):
