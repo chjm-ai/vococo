@@ -584,12 +584,18 @@ def is_command(text: str) -> bool:
     return first_word.count("/") == 1
 
 
+def blocked_model_commands(model: str | None) -> tuple[str, ...]:
+    if (model or "").startswith("agy-native:"):
+        return ("/model", "/new", "/clear", "/reset", "/compact")
+    return ()
+
+
 def handle_command(text: str, session_key: str, current_model: str) -> CommandOutcome:
     """处理斜杠命令。平台无关的部分在这;UI 副作用(清屏等)由前端按 outcome 标志执行。"""
     cmd, _, arg = text.partition(" ")
     cmd, arg = cmd.lower(), arg.strip()
 
-    if cmd in ("/model", "/new", "/clear", "/reset", "/compact") and (current_model or "").startswith("agy-native:"):
+    if cmd in blocked_model_commands(current_model):
         return CommandOutcome(reply="当前使用 Antigravity。请用网页模型面板切换模型；跨通道时可选择是否带上最近文字。")
     if cmd in ("/exit", "/quit"):
         return CommandOutcome(reply="再见。", exit=True)

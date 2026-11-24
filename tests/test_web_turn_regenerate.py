@@ -32,6 +32,7 @@ def regen_web_app(isolated, monkeypatch):
 @pytest.mark.anyio
 async def test_regenerate_deletes_latest_turn_and_returns_user_text(regen_web_app):
     key = config.resolve_session_key("web", "abc")
+    session_store.set_chosen_model(key, "claude-sonnet-5")
     turn_id = session_store.start_turn(key, "重新说一遍")
     session_store.finish_turn(turn_id, "不满意的回答")
 
@@ -39,7 +40,8 @@ async def test_regenerate_deletes_latest_turn_and_returns_user_text(regen_web_ap
         resp = await client.post("/turn/regenerate", json={"conv": "abc", "id": turn_id})
         assert resp.status == 200
         data = await resp.json()
-        assert data == {"ok": True, "text": "重新说一遍"}
+        assert data == {"ok": True, "text": "重新说一遍", "expected_model": "claude-sonnet-5",
+                        "engine_segment": None}
 
     assert session_store.load_history(key) == []
 

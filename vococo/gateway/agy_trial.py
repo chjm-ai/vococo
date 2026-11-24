@@ -951,7 +951,7 @@ async def _approve_native_tool(name, call, cwd, key):
 async def stream_native(key: str, turn_id: int, model: str, prompt: str, refusal: str = "", *, images=None, files=()):
     from ..core import model_preferences
     from ..core.agent import (
-        AgentReply, Done, TextDelta, ThinkingDelta, ToolFinished, ToolInput, ToolStarted,
+        AgentReply, ContextUsage, Done, TextDelta, ThinkingDelta, ToolFinished, ToolInput, ToolStarted,
     )
     from ..core.prompt import load_reply_preferences
     from ..memory import agents, session_store
@@ -1064,8 +1064,11 @@ async def stream_native(key: str, turn_id: int, model: str, prompt: str, refusal
             turn_prompt = f"{_ACP_NOTE}{tools_note}{style_note}{handoff_note}{attachment_note}\n\n用户消息：\n{prompt}"
             attachment_options = {"image_blocks": image_blocks} if image_blocks else {}
 
+            context_usage = (0, 0)
+
             async def consume_once(sid):
-                nonlocal session_id, has_tool_results
+                nonlocal session_id, has_tool_results, context_usage
+                context_usage = (0, 0)
                 async with aclosing(agy_acp.stream_turn(
                         cwd, NATIVE_TURN_TIMEOUT, base, turn_prompt, effort=effort, session_id=sid,
                         **attachment_options,
@@ -1094,6 +1097,8 @@ async def stream_native(key: str, turn_id: int, model: str, prompt: str, refusal
                                 yield ToolFinished(display, ok, preview, tid, detail)
                         elif event == "session":
                             session_id = payload
+                        elif event == "context_usage":
+                            context_usage = payload
 
             async def consume(sid):
                 # 上游灰度期间新模型可能落在旧目录的进程里；换进程重试即可命中新目录。
@@ -1139,6 +1144,9 @@ async def stream_native(key: str, turn_id: int, model: str, prompt: str, refusal
                     raise UpstreamError("agy_native_lock_failed")
             elif not bound and not session_store.lock_agy_native_session(key, entry_id, turn_id, lock):
                 raise UpstreamError("agy_native_lock_failed")
+            if not denied_only:
+                # 只保存成功轮次的最后快照；没上报则清除已不再准确的上轮占用。
+                yield ContextUsage(*context_usage, entry_id)
         except (ValueError, OSError, UpstreamError, agy_acp.AcpError) as exc:
             code = exc.code if isinstance(exc, (UpstreamError, agy_acp.AcpError)) else type(exc).__name__
             log.warning("Antigravity 网页轮次失败: turn_id=%s code=%s", turn_id, code)

@@ -572,8 +572,8 @@ def new_session(session_key: str) -> None:
 
 
 def update_context(session_key: str, tokens: int, window: int, model: str) -> None:
-    """运行中的窗口快照，不累加消耗、不改写上一轮计费明细。"""
-    if tokens <= 0 or window <= 0:
+    """窗口快照；(0, 0) 表示占用未知，不累加或改写计费明细。"""
+    if tokens < 0 or window < 0 or (tokens > 0 and window == 0):
         return
     c = _conn()
     c.execute(
@@ -1097,7 +1097,8 @@ def list_sessions(prefix: str, *, archived: bool | None = None,
         "  COALESCE(MAX(m.archived),0), "
         "  COALESCE(MAX(m.pending_review),0), COALESCE(MAX(m.pinned),0), "
         "  COALESCE(MAX(m.last_error),0), MAX(m.title), "
-        "  MAX(m.ctx_cli_window), MAX(m.ctx_compact_threshold) "
+        "  MAX(m.ctx_cli_window), MAX(m.ctx_compact_threshold), "
+        "  json_extract(MAX(m.engine_context), '$.segment') "
         "FROM keys k "
         "LEFT JOIN session_meta m ON k.session_key = m.session_key "
         "LEFT JOIN turns t ON t.session_key = k.session_key "
@@ -1110,6 +1111,7 @@ def list_sessions(prefix: str, *, archived: bool | None = None,
         key, turns, last_ts = row[0], row[1], row[2]
         item = {"key": key, "title": row[17] or "新对话", "turns": turns, "last_ts": last_ts}
         item.update(_usage_fields(row[3:13], *row[18:20]))
+        item["engine_segment"] = row[20]
         item["archived"] = bool(row[13])
         item["pending_review"] = bool(row[14])
         item["pinned"] = bool(row[15])
@@ -1186,7 +1188,7 @@ def session_summary(session_key: str) -> dict:
         "COALESCE(ctx_window,0), COALESCE(last_in,0), COALESCE(last_cache,0), "
         "COALESCE(last_out,0), model, chosen_model, "
         "COALESCE(cache_read_total,0), COALESCE(input_fresh_total,0), COALESCE(pinned,0), "
-        "ctx_cli_window, ctx_compact_threshold "
+        "ctx_cli_window, ctx_compact_threshold, json_extract(engine_context, '$.segment') "
         "FROM session_meta WHERE session_key=?",
         (session_key,),
     ).fetchone()
@@ -1197,6 +1199,7 @@ def session_summary(session_key: str) -> dict:
         "last_ts": last_ts,
     }
     out["pinned"] = bool(trow[10]) if trow else False
+    out["engine_segment"] = trow[13] if trow else None
     out.update(_usage_fields(trow[:10], *trow[11:13]) if trow else _usage_fields((0, 0, 0, 0, 0, 0, "", "", 0, 0)))
     out.update(_ownership_fields(session_key))
     return out
@@ -1359,9 +1362,10 @@ def set_chosen_model(session_key: str, model: str, *, handoff: str = "") -> None
     if row and row[0] != model:
         # 老会话没记模型时也不能确认旧 transcript 的身份，保守地走历史恢复。
         c.execute(
-            "UPDATE session_meta SET sdk_session_id=NULL, ctx_cli_window=0, "
-            "ctx_compact_threshold=0 WHERE session_key=?",
-            (session_key,),
+            "UPDATE session_meta SET sdk_session_id=NULL, ctx_cli_window=0, ctx_compact_threshold=0, "
+            "ctx_tokens=CASE WHEN ? THEN 0 ELSE ctx_tokens END, "
+            "ctx_window=CASE WHEN ? THEN 0 ELSE ctx_window END WHERE session_key=?",
+            (model.startswith("agy-native:"), model.startswith("agy-native:"), session_key),
         )
     c.execute(
         "INSERT INTO session_meta(session_key, watermark_id, chosen_model) VALUES (?,0,?) "
