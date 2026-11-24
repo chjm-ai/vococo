@@ -312,7 +312,7 @@ from .instance_config import strings as _instance_strings
 # 只读 frontmatter 的 identities(exclude 规则把纪要/逐字稿正文挡在扫描之外):
 # 参会人用录音时确认过的说话人映射,再按 source 音频文件名去对登记库。
 PEOPLE_PROFILES_CORPORATE_MEETING_DIR: str = os.environ.get(
-    "PEOPLE_PROFILES_CORPORATE_MEETING_DIR", "2.重点项目/DeepLeaper/会议"
+    "PEOPLE_PROFILES_CORPORATE_MEETING_DIR", "2.重点项目/DeepLeaper/04 会议"
 ).strip()
 
 PEOPLE_PROFILES_OBSIDIAN_FOLDERS: list[str] = (
@@ -329,7 +329,7 @@ PEOPLE_PROFILES_OBSIDIAN_FOLDERS: list[str] = (
 #    写进 DeepLeaper/公司资料 等项目目录),同一场会既有"思考"总结
 #    又有"会议纪要"副本,两边都扫会让同一个人重复更新,且纪要里带说话人映射,
 #    噪音更大——统一只从"思考"侧提取;
-# ② 统一会议目录 2.重点项目/DeepLeaper/会议 整目录不算扫描目录(否则目录里全是
+# ② 统一会议目录 2.重点项目/DeepLeaper/04 会议 整目录不算扫描目录(否则目录里全是
 #    纪要→被规则清空→误报"配置错了"),参会人走 frontmatter identities 那条路;
 # ③ 各项目目录里的 index/PLAN/NOW/AGENTS 等文档是写作资料,不是人物互动记录。
 PEOPLE_PROFILES_ALWAYS_EXCLUDE: list[str] = [
