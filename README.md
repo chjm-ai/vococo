@@ -143,6 +143,16 @@ python3 scripts/migrate_local_preferences.py --section tool_paths --source-ref <
 修改此文件与 Agent 权限一样需要审批；修改偏好后新会话读取，已有会话仍沿用提示词快照。
 密钥继续由原环境变量/认证存储管理，不搬进此文件。
 
+## 飞书预授权
+
+默认关闭。只有管理员在宿主机创建以下标记、再重启 `vococo serve` 才生效；用普通账号运行服务，不要用 root 运行。
+
+```sh
+sudo install -o root -m 0644 /dev/null /etc/vococo-lark-cli-auto-allow
+```
+
+开启后，单条合规飞书 CLI 业务命令和文档便捷工具不重复弹窗，包含远程派发和定时任务；操作仍受飞书账号权限限制，并记录审计。CLI 本机认证、配置、升级、复合 shell、文档外部资源引用和旧铃铛重跑不豁免。长篇纯 Markdown 用 `lark_document` 直接传正文。要关闭，管理员移除标记后重启；工作目录或 `.env` 里的设置不能开启这项权限。
+
 ## 架构
 
 ```

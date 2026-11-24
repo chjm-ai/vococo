@@ -174,17 +174,22 @@ async def act(notice_id: str, label: str) -> dict:
             return _act_task_approval(n, task, access, label, conv)
         from ..tools import danger
 
-        if label == "永远允许" and n["rule_kind"]:
-            from ..memory import approvals
+        if danger._category(n["reason"]) == "lark_data":
+            danger.grant_once(n["session_key"], n["reason"], n["operation_key"])
+        else:
+            if label == "永远允许" and n["rule_kind"]:
+                from ..memory import approvals
 
-            approvals.add_rule(n["rule_kind"], n["rule_scope"], n["rule_label"] or "")
-        elif label in ("本次会话都允许", "本轮任务都允许"):
-            danger.grant_round(n["session_key"], n["reason"])
-        danger.grant_once(n["session_key"], n["reason"])
+                approvals.add_rule(n["rule_kind"], n["rule_scope"], n["rule_label"] or "")
+            elif label in ("本次会话都允许", "本轮任务都允许"):
+                danger.grant_round(n["session_key"], n["reason"])
+            danger.grant_once(n["session_key"], n["reason"])
         text = (
             f"刚才等批准的操作,主人已批准({label}):{n['reason']}\n{n['detail']}\n"
             "请重新执行这一步,并把之前因此没做完的部分补完。"
         )
+        if danger._category(n["reason"]) == "lark_data" and not n["operation_key"]:
+            text = f"旧飞书审批缺少完整操作签名，未发放补批许可。请核对并重新申请：\n{n['detail']}"
     elif n["kind"] == "decision":
         text = (
             f"(拍板)你之前请我拍板:\n{n['prompt']}\n\n我的选择:{label}\n"

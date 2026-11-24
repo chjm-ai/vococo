@@ -597,6 +597,7 @@ async def _run_with_workspace(task_id: str, turn_text: str | None, *, fresh: boo
     # 登记本轮属于哪个任务会话:审批闸据此把要批的操作推到 Web 任务会话、记审批记录/待批队列
     task_session_token = danger.set_task_session(session_key, inherit_pending=not approval_retry)
     replay_token = danger.approval_replay.set(replay) if replay else None
+    retry_token = danger.approval_retry_active.set(bool(approval_retry))
     from ..gateway import clarify
 
     source_token = None
@@ -629,6 +630,7 @@ async def _run_with_workspace(task_id: str, turn_text: str | None, *, fresh: boo
             danger.reset_cwd(cwd_token)
         if replay_token is not None:
             danger.approval_replay.reset(replay_token)
+        danger.approval_retry_active.reset(retry_token)
         danger.reset_task_session(task_session_token)
         if used_tokens and _counts_daily(row):
             try:

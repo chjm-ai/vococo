@@ -327,6 +327,7 @@ async def test_late_approval_after_model_switch_requires_explicit_rerun(client, 
     from vococo.tools import lark_documents as lark
 
     task_id, key, nid, args, run_cli = await _deferred_lark_task(client, monkeypatch)
+    monkeypatch.setattr(config, "LARK_CLI_AUTO_ALLOW", True)
     session_store.set_chosen_model(key, "gpt-6.2-sol")
     calls = []
 
@@ -844,6 +845,78 @@ async def test_remote_approval_precedes_full_and_permanent_rules(client, monkeyp
     permissions.auto_allows.assert_not_called()
     approvals.match_rule.assert_not_called()
     assert background.call_args.args[3:5] == (None, key)
+
+
+@pytest.mark.parametrize("enabled", [None, False, True, "true"])
+async def test_remote_lark_opt_in_is_limited_to_feishu(client, monkeypatch, enabled):
+    task = await create(client)
+    monkeypatch.setattr(config, "LARK_CLI_AUTO_ALLOW", enabled is True)
+    if enabled == "true":
+        path = config.DATA_DIR / "instance_config.json"
+        path.write_text(json.dumps({"version": 1, "approvals": {"lark_cli_auto_allow": True}}))
+    monkeypatch.setattr(danger, "_approve_background", AsyncMock(return_value=False))
+    work = config.DATA_DIR.parent / "work"
+    work.mkdir()
+    (work / "outside.md").symlink_to(work.parent / "outside.md")
+    cwd = danger.set_cwd(str(work))
+    token = danger.set_task_session(tasks.session_key(task["id"]))
+    try:
+        async def bash(command):
+            return await danger.pretool_guard_hook(
+                {"tool_name": "Bash", "tool_input": {"command": command}}, None, {})
+
+        assert await bash("lark-cli --help 2>&1 | head -60") == {}
+        for command in ("lark-cli docs +fetch --doc abc",
+                        "lark-cli docs +update --doc abc --doc-format markdown --content '甲;乙'",
+                        "lark-cli docs +create --doc-format=markdown --content='草稿'", "lark-cli drive +download --output ./file.pdf",
+                        "lark-cli --profile team drive file delete --file-token abc --yes"):
+            assert (await bash(command) == {}) is (enabled is True)
+        assert await danger.require_approval("写入飞书文档", "{}", immutable_tool="lark_document") is (enabled is True)
+        for command in ("git push origin main", "lark-cli docs +fetch --doc abc; git push origin main",
+                        "lark-cli --help 2>&1 | tee ./out", "lark-cli docs +fetch --doc abc | tee ./out",
+                        "lark-cli --profile work auth revoke", "lark-cli drive +download --output ../outside.pdf",
+                        "lark-cli drive +upload --file .env", "lark-cli docs +create --content @outside.md",
+                        "lark-cli docs +create --doc-format markdown --content @draft.md",
+                        "lark-cli docs +create --content '<img path=\"sample.png\"/>'",
+                        'lark-cli docs +fetch --doc "$TARGET"'):
+            assert (await bash(command))["hookSpecificOutput"]["permissionDecision"] == "deny"
+        replay = danger.approval_replay.set(danger.ApprovalReplay("old-session", 10, "old-operation"))
+        try:
+            assert not await danger.require_approval("写入飞书文档", "{}", immutable_tool="lark_document")
+        finally:
+            danger.approval_replay.reset(replay)
+        decisions = [row["decision"] for row in approvals.list_audit()]
+        assert decisions.count("lark_policy") == (6 if enabled is True else 0)
+    finally:
+        danger.reset_task_session(token)
+        danger.reset_cwd(cwd)
+
+
+async def test_local_lark_one_shot_binds_immutable_input_before_preauthorization(client, monkeypatch):
+    reason = "写入飞书文档"
+    cli_reason = "飞书原生 CLI 操作(可能读取、发送或修改数据)"
+    key = "task:local-lark"
+    shell = {"command": 'lark-cli docs +fetch --doc "$TARGET"'}
+    detail = '{"doc":"sample"}'
+    background = AsyncMock(return_value=False)
+    monkeypatch.setattr(danger, "_approve_background", background)
+    monkeypatch.setattr(config, "LARK_CLI_AUTO_ALLOW", False)
+    token = danger.set_task_session(key)
+    try:
+        assert not await danger._ask_approval("Bash", cli_reason, shell, True)
+        assert background.call_args.kwargs["operation_key"] is None
+        danger.grant_once(key, cli_reason)  # Shell 和旧通知没有不可变的入参，不发补批许可。
+        assert not await danger._ask_approval("Bash", cli_reason, shell, True)
+        assert not await danger.require_approval(reason, detail, immutable_tool="lark_document")
+        operation_key = background.call_args.kwargs["operation_key"]
+        danger.grant_once(key, reason, operation_key)
+        monkeypatch.setattr(config, "LARK_CLI_AUTO_ALLOW", True)
+        assert not await danger._ask_approval("Bash", cli_reason, shell, True)
+        assert await danger.require_approval(reason, detail, immutable_tool="lark_document")
+        assert not danger._take_one_shot(key, "lark_data", operation_key)
+        assert approvals.list_audit()[0]["decision"] == "approved_once"
+    finally:
+        danger.reset_task_session(token)
 
 
 async def test_remote_approval_uses_turn_access_and_fails_closed(client, monkeypatch):

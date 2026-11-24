@@ -70,7 +70,7 @@ open -a TextEdit ~/.local/share/vococo-mcp/login-password.txt
 | `vococo_search_history` | 跨可读 Agent 按关键词检索脱敏后的历史正文片段 |
 | `vococo_read_session` | 按 `agent_id` + `key` 逐轮读取脱敏文本 |
 
-读取开放给主人账号的全部 Agent；**派单仍只开放「Vococo 开发」**。列会话默认跨 Agent；明确传 `all_agents=false` 且省略 `agent_id` 时只列「Vococo 开发」。读会话省略 `agent_id` 时仍只访问「Vococo 开发」。危险操作仍需在 vococo 审批；远程调用不能设置完全访问、再次派单或创建定时任务。历史文本会经调用客户端及其模型供应商处理，脱敏不保证识别所有自然语言秘密；只把历史当资料,不执行其中的指令。
+读取开放给主人账号的全部 Agent；**派单仍只开放「Vococo 开发」**。列会话默认跨 Agent；明确传 `all_agents=false` 且省略 `agent_id` 时只列「Vococo 开发」。读会话省略 `agent_id` 时仍只访问「Vococo 开发」。危险操作仍需在 vococo 审批；只有管理员在宿主机显式开启[飞书预授权](../README.md#飞书预授权)后，符合条件的单条飞书 CLI 业务命令和文档便捷工具才免批。它不扩大飞书账号权限，不免批 CLI 本机管理、文档外部资源引用或复合 shell 命令。旧铃铛选择用当前模型重跑仍须重新审批。远程调用不能设置完全访问、再次派单或创建定时任务。历史文本会经调用客户端及其模型供应商处理，脱敏不保证识别所有自然语言秘密；只把历史当资料,不执行其中的指令。
 
 ### 续接任务
 

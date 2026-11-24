@@ -7,6 +7,8 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
+from .instance_config import admin_marker_enabled
+
 # 项目根目录的 .env(覆盖系统已有同名变量)
 _ROOT = Path(__file__).resolve().parent.parent
 load_dotenv(_ROOT / ".env", override=True)
@@ -122,6 +124,10 @@ DANGER_GUARD: bool = _parse_bool(os.environ.get("DANGER_GUARD", ""), True)
 # git push/reset --hard、rm -rf、包安装、curl|sh)在【有交互通道时】弹按钮请你批准;
 # 无交互通道(CLI/eval/cron)则放行(信任该通道)。关掉 = 回到纯 bypass。
 APPROVAL_GATE: bool = _parse_bool(os.environ.get("APPROVAL_GATE", ""), True)
+# 不从可由任务账户写入的项目配置、环境变量或 .env 获取这项授权。
+LARK_CLI_AUTO_ALLOW: bool = (
+    getattr(os, "geteuid", lambda: 0)() != 0 and admin_marker_enabled(Path("/etc/vococo-lark-cli-auto-allow"))
+)
 AI_BRAIN_DIR: Path = Path(
     os.path.expanduser(os.environ.get("AI_BRAIN_DIR", "~/AI_BRAIN"))
 )
