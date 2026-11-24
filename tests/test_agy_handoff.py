@@ -42,6 +42,14 @@ async def test_auth_and_current_agent_scope(isolated, monkeypatch):
     unsafe.mkdir()
     (unsafe / 'SKILL.md').write_text('requires local configuration')
     (unsafe / 'config.json').write_text('not exported')
+    ppt = isolated / 'skills' / 'webppt-maker'
+    (ppt / 'references').mkdir(parents=True)
+    (ppt / 'SKILL.md').write_text('---\nname: webppt-maker\ndescription: 制作完整 PPT。\n---\nPPT 技能正文')
+    (ppt / 'references/outline.md').write_text('大纲方法')
+    (ppt / 'references/pptx-export.md').write_text('未交接的导出方法')
+    (ppt / 'uv.lock').write_text('未交接的依赖')
+    (ppt / 'logo.png').write_bytes(b'\x89PNG')
+    (ppt / 'export.py').write_text('仅留本机的脚本')
     own = config.AI_BRAIN_DIR / 'memory' / 'project'
     own.mkdir(parents=True)
     (config.AI_BRAIN_DIR / 'MEMORY.md').write_text('private-preamble\n## 允许\nshared-marker\n## 不允许\nprivate-marker\n')
@@ -51,7 +59,7 @@ async def test_auth_and_current_agent_scope(isolated, monkeypatch):
     monkeypatch.setattr(agy_trial, 'accepts_session', lambda _: True)
     monkeypatch.setattr(agents, 'agent_for_session', owner)
     monkeypatch.setattr(agents, 'runtime_for_session', lambda _: {
-        'skills': ['standalone', 'has-helper', 'not-found', 'unsafe-config'], 'mcp': ['api'],
+        'skills': ['standalone', 'has-helper', 'not-found', 'unsafe-config', 'webppt-maker'], 'mcp': ['api'],
         'memory_sections': ['允许'], 'memory_dir': str(own),
     })
     monkeypatch.setattr(session_store, 'get_external_mcp_names', lambda _: [])
@@ -76,8 +84,9 @@ async def test_auth_and_current_agent_scope(isolated, monkeypatch):
         data = await response.json()
     assert seen == ['session:qa']
     assert (data['global_agent_id'], data['agent_id']) == ('general', 'abc123')
-    assert data['native_skills'] == ['has-helper', 'standalone']
+    assert data['native_skills'] == ['has-helper', 'standalone', 'webppt-maker']
     assert data['unmapped_skills'] == ['not-found', 'unsafe-config']
+    assert '仅支持' in next(item['description'] for item in data['skills'] if item['name'] == 'webppt-maker')
     assert data['unmapped_vococo_mcp'] == ['api']
     w = Path(data['workspace'])
     assert w.stat().st_mode & 0o777 == 0o700
@@ -86,6 +95,11 @@ async def test_auth_and_current_agent_scope(isolated, monkeypatch):
     assert (w / 'context/PROJECT-RULES.md').read_text() == 'project-rule'
     assert 'DO-NOT-COPY' not in str(data) and not list(w.rglob('.env'))
     assert (w / '.agents/skills/has-helper/helper.py').read_text() == 'helper'
+    ppt_snapshot = w / '.agents/skills/webppt-maker'
+    assert {path.name for path in ppt_snapshot.iterdir()} == {'SKILL.md'}
+    ppt_text = (ppt_snapshot / 'SKILL.md').read_text()
+    assert '大纲方法' in ppt_text and 'PPTX 导出未交接' in ppt_text
+    assert 'PPT 技能正文' not in ppt_text and '未交接的导出方法' not in ppt_text
     memory = (w / 'context/MEMORY.md').read_text()
     assert 'shared-marker' in memory and 'private-marker' not in memory and 'private-preamble' not in memory
     link = own.with_name('another-project')
@@ -93,6 +107,36 @@ async def test_auth_and_current_agent_scope(isolated, monkeypatch):
     assert agy_handoff._memory_docs({'memory_dir': str(link), 'memory_sections': ['不存在']}) == {}
     assert (w / 'context/AGENT-MEMORY.md').read_text() == 'own-marker'
     assert list(json.loads((w / '.agents/mcp_config.json').read_text())['mcpServers']) == data['local_mcp']
+
+    (ppt_snapshot / 'export.py').write_text('旧快照的导出脚本')
+    (ppt / 'references/outline.md').write_text('更新后的大纲方法')
+    agy_handoff.prepare_into(w, 'session:qa')
+    assert {path.name for path in ppt_snapshot.iterdir()} == {'SKILL.md'}
+    assert '更新后的大纲方法' in (ppt_snapshot / 'SKILL.md').read_text()
+
+
+@pytest.mark.parametrize('invalid', ['missing', 'linked-file', 'linked-directory', 'sensitive', 'view-too-large'])
+def test_webppt_outline_rejects_unshareable_source(tmp_path, monkeypatch, invalid):
+    ppt = tmp_path / 'webppt-maker'
+    ppt.mkdir()
+    (ppt / 'SKILL.md').write_text('技能正文')
+    refs = ppt / 'references'
+    outside = tmp_path / 'outside'
+    outside.mkdir()
+    (outside / 'outline.md').write_text('不可从链接读取的内容')
+    if invalid == 'linked-directory':
+        refs.symlink_to(outside, target_is_directory=True)
+    else:
+        refs.mkdir()
+        outline = refs / 'outline.md'
+        if invalid == 'linked-file':
+            outline.symlink_to(outside / 'outline.md')
+        elif invalid == 'sensitive':
+            outline.write_text('-----BEGIN PRIVATE KEY-----\n测试内容')
+        elif invalid == 'view-too-large':
+            outline.write_text('a' * agy_handoff._MAX_FILE)
+    monkeypatch.setattr(settings_store, '_SKILLS_DIR', tmp_path)
+    assert agy_handoff._portable_skills(['webppt-maker']) == ({}, [])
 
 
 def test_prepare_into_refreshes_context_and_hides_removed_skills(tmp_path, monkeypatch):

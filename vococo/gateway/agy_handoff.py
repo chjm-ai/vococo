@@ -26,6 +26,7 @@ def _small_text(path: Path):
     return data.decode('utf-8', errors='replace')
 
 
+_WEBPPT_SKILL = 'webppt-maker'
 _SKILL_SUFFIXES = {'.md', '.txt', '.py', '.sh', '.zsh', '.js', '.mjs', '.ts', '.html', '.css', '.svg'}
 _SKILL_SECRET_VALUE = re.compile(
     r'-----BEGIN [A-Z ]*PRIVATE KEY-----|\b(?:sk-[A-Za-z0-9_\-]{16,}|AIza[A-Za-z0-9_\-]{30,}|'
@@ -33,6 +34,35 @@ _SKILL_SECRET_VALUE = re.compile(
     r'["\'][A-Za-z0-9_+./=-]{12,}["\']', re.I,
 )
 _SKILL_SECRET_NAME = re.compile(r'credential|password|secrets?|(?:^|[-_])token(?:[-_.]|$)|private[-_]?key', re.I)
+
+
+def _skill_text(path: Path) -> str | None:
+    if (path.name.startswith('.') or _SKILL_SECRET_NAME.search(path.name)
+            or path.suffix.lower() not in _SKILL_SUFFIXES):
+        return None
+    text = _small_text(path)
+    return text if text is not None and not _SKILL_SECRET_VALUE.search(text) else None
+
+
+def _webppt_outline(folder: Path) -> dict[str, str]:
+    # 确认原入口有效，但不复制其中的制作指令；大纲只依赖单独的参考文档。
+    refs = folder / 'references'
+    if folder.is_symlink() or refs.is_symlink():
+        return {}
+    entry = _skill_text(folder / 'SKILL.md')
+    outline = _skill_text(refs / 'outline.md')
+    if not entry or not outline:
+        return {}
+    text = (
+        '---\nname: webppt-maker\n'
+        'description: 仅支持 PPT 或汇报文档的叙事大纲与制作大纲。\n---\n\n'
+        '# Antigravity 交接范围\n\n'
+        '当前 `SKILL.md` 使用原技能的 `references/outline.md` 作为正文，仅支持 A/B 大纲阶段。'
+        '下文提到 C 阶段仅用于判断何时停止，不执行 C 阶段。'
+        'HTML 制作、模板和 PPTX 导出未交接；如需要这些能力，请如实告知用户。\n\n'
+        f'{outline}'
+    )
+    return {'SKILL.md': text} if len(text.encode('utf-8')) <= _MAX_FILE else {}
 
 
 def _portable_skill(folder: Path):
@@ -48,8 +78,7 @@ def _portable_skill(folder: Path):
             if name == '.DS_Store':
                 continue
             path = Path(directory) / name
-            if (name.startswith('.') or _SKILL_SECRET_NAME.search(name) or path.suffix.lower() not in _SKILL_SUFFIXES
-                    or (text := _small_text(path)) is None or _SKILL_SECRET_VALUE.search(text)):
+            if (text := _skill_text(path)) is None:
                 return {}  # 不把缺依赖或携带配置凭据的 Skill 当成已迁移
             total += len(text.encode('utf-8'))
             if total > 512 * 1024 or len(docs) >= 64:
@@ -64,7 +93,10 @@ def _portable_skills(names):
     root = settings_store._SKILLS_DIR.resolve()
     docs, shared = {}, []
     for name in dict.fromkeys(names):
-        if re.fullmatch(r'[a-z0-9][a-z0-9-]*', name) and (files := _portable_skill(root / name)):
+        if not re.fullmatch(r'[a-z0-9][a-z0-9-]*', name):
+            continue
+        load = _webppt_outline if name == _WEBPPT_SKILL else _portable_skill
+        if files := load(root / name):
             docs.update({f'.agents/skills/{name}/{path}': text for path, text in files.items()})
             shared.append(name)
     return docs, sorted(shared)
@@ -210,6 +242,26 @@ def prepare(key: str, *, draft_owner: dict | None = None):
     return {'workspace': str(workspace), **meta}
 
 
+def _prune_skill_snapshots(workspace: Path, current_skills: set[str]):
+    root = workspace / '.agents/skills'
+    if _WEBPPT_SKILL in current_skills:
+        scoped = root / _WEBPPT_SKILL
+        if any(path.is_symlink() for path in (root.parent, root, scoped)):
+            raise ValueError('技能快照目录不可用')
+        # 只重建受管快照；不能让上一轮的完整技能资源跟着仅大纲入口一起留下。
+        if scoped.is_dir() and any(
+            path.name != 'SKILL.md' or path.is_symlink() or not path.is_file() for path in scoped.iterdir()
+        ):
+            shutil.rmtree(scoped)
+    # 移出名单的旧目录会让 agy 原生技能发现继续列出它。
+    if not root.is_symlink() and root.is_dir():
+        for folder in root.iterdir():
+            if (re.fullmatch(r'[a-z0-9][a-z0-9-]*', folder.name) and folder.name not in current_skills
+                    and folder.is_dir() and not folder.is_symlink()):
+                with suppress(OSError):
+                    shutil.rmtree(folder)
+
+
 def prepare_into(workspace: Path, key: str, *, draft_owner: dict | None = None):
     """把当前 Agent 的规则、技能、记忆索引和只读 MCP 写进既有工作区。
 
@@ -257,15 +309,7 @@ def prepare_into(workspace: Path, key: str, *, draft_owner: dict | None = None):
         with suppress(OSError):
             if f'context/{name}' not in docs:
                 (workspace / 'context' / name).unlink()
-    # 技能快照也要跟着 Agent 名单走：移出名单的旧目录会让 agy 原生技能发现继续列出它。
-    current_skills = {item['name'] for item in meta['skills']}
-    skills_root = workspace / '.agents/skills'
-    if not skills_root.is_symlink() and skills_root.is_dir():
-        for folder in skills_root.iterdir():
-            if (re.fullmatch(r'[a-z0-9][a-z0-9-]*', folder.name) and folder.name not in current_skills
-                    and folder.is_dir() and not folder.is_symlink()):
-                with suppress(OSError):
-                    shutil.rmtree(folder)
+    _prune_skill_snapshots(workspace, {item['name'] for item in meta['skills']})
     for relative, text in docs.items():
         target = workspace / relative
         target.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
