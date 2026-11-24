@@ -716,34 +716,37 @@ function fmtTok(n){ n=+n||0; if(n>=1000) return (n/1000).toFixed(n>=10000?0:1)+"
 function setMeta(d){
   d = d || {};
   S.meta = {
-    ctx:+d.ctx_tokens||0, total:+d.total_tokens||0, win:+d.ctx_window||CTX_WINDOW,
+    ctx:+d.ctx_tokens||0, total:+d.total_tokens||0, win:+d.ctx_window||0,
     cliWin:+d.ctx_cli_window||0, compact:+d.ctx_compact_threshold||0,
     lin:+d.last_in||0, lc:+d.last_cache||0, lout:+d.last_out||0, model:d.model||"",
-    crt:+d.cache_read_total||0, ift:+d.input_fresh_total||0,
+    crt:+d.cache_read_total||0, ift:+d.input_fresh_total||0, segment:d.engine_segment??null,
   };
   setModel(d.chosen_model || (S.models._conv===permConvId(S.conv) ? S.models.chosen_model : ""));
-  renderMeta();
 }
 
 // 侧栏数据到位后补一次模型回填:打开会话时若对应行还没拉到(c 找不到),setMeta 只能
 // 回落全局默认;等 /voice/sidebar、/cron/sidebar 拉完再按真实 chosen_model 补一遍,
 // 不然模型胶囊会一直显示"另一个模型",直到用户手动切走再切回。只在行对象带
 // chosen_model 时写,不把 S.model 清回空。
-function refillCurrentMeta(){
+function refillCurrentMeta(refreshUsage=false){
   const conv=S.conv;
   if(!conv || isDraftConv(conv)) return;
   const c=S.convs.find(x=>x.conv===conv)
     || (S.voiceSidebar.main && S.voiceSidebar.main.conv===conv ? S.voiceSidebar.main : null)
     || (S.voiceSidebar.tasks||[]).find(x=>x.conv===conv)
     || (S.cronJobs||[]).find(x=>x.conv===conv);
-  if(c && (!S.meta || (!S.meta.ctx && !S.meta.total))) setMeta(c);
-  else if(c && c.chosen_model) setModel(c.chosen_model);
+  if(!c) return;
+  const crossed="engine_segment" in c && c.engine_segment!==(S.meta?.segment??null);
+  const refreshAgy=refreshUsage && c.chosen_model?.startsWith("agy-native:");
+  if(crossed || refreshAgy || !S.meta || (!S.meta.ctx && !S.meta.total)) setMeta(c);
+  else if(c.chosen_model) setModel(c.chosen_model);
+  if("engine_segment" in c && c.engine_segment!==(S.models.engine_segment??null)) reloadSavedModels(conv);
 }
 function updateUsageMeta(d){
   const meta={};
   for(const name of ['ctx_tokens','total_tokens','ctx_window','ctx_cli_window','ctx_compact_threshold',
                      'last_in','last_cache','last_out',
-                     'model','chosen_model','cache_read_total','input_fresh_total']){
+                     'model','chosen_model','cache_read_total','input_fresh_total','engine_segment']){
     if(name in d) meta[name]=d[name];
   }
   for(const rows of [S.convs,S.voiceSidebar.tasks||[],S.cronJobs||[]]){
@@ -778,7 +781,7 @@ async function reloadSavedModels(conv){
 }
 function restoreSessionModels(){
   const conv=permConvId(S.conv), cached=sessionModels.get(conv);
-  S.models=cached || {...S.models, _conv:conv, chosen_model:"", engine_segment:null, efforts:{}, service_tiers:{}};
+  S.models=cached || {...S.models, _conv:conv, chosen_model:"", engine_segment:null, blocked_commands:[], efforts:{}, service_tiers:{}};
   $("#effortPop").hidden=true;
   $("#modelPop").hidden=true;
   setModel(S.models.chosen_model||"");
@@ -1064,7 +1067,9 @@ function initVoiceSelect(){
 }
 function cmdMatches(prefix){
   const p=prefix.toLowerCase();
-  const cmds=S.commands.filter(c=>c.name.toLowerCase().startsWith(p)).map(c=>Object.assign({kind:"cmd"},c));
+  const blocked=S.models.blocked_commands||[];
+  const cmds=S.commands.filter(c=>c.name.toLowerCase().startsWith(p) && !blocked.includes("/"+c.name))
+    .map(c=>Object.assign({kind:"cmd"},c));
   const skills=S.skills.filter(c=>c.name.toLowerCase().startsWith(p)).map(c=>Object.assign({kind:"skill"},c));
   return cmds.concat(skills);
 }
@@ -1117,7 +1122,7 @@ function curModel(){
   if(job) return job.model||"";
   return S.model || S.models.default || "";
 }
-function setModel(id){ S.model=id||""; renderModelChip(); renderEffortChip(); }
+function setModel(id){ S.model=id||""; renderModelChip(); renderEffortChip(); renderMeta(); }
 function renderModelChip(){
   const copy=typeof agyCopyActive==="function" && agyCopyActive();
   const model=curModel();
@@ -1284,8 +1289,10 @@ async function pickModel(id){
     }
     if(permConvId(S.conv)===conv){
       const selected=data.chosen_model || id;
-      S.models.chosen_model=selected; S.models.engine_segment=data.engine_segment ?? null; setModel(selected);
-      updateUsageMeta({...data,conv}); drawPending();
+      S.models.chosen_model=selected; S.models.engine_segment=data.engine_segment ?? null;
+      S.models.blocked_commands=data.blocked_commands||[];
+      if(S.models.engine_segment!==segment) $("#wrap").querySelectorAll(".tfregen").forEach(btn=>btn.remove());
+      updateUsageMeta({...data,conv}); setModel(selected); drawPending();
     }
   }catch(error){
     if(permConvId(S.conv)===conv) window.alert(error.message || "模型切换失败");
@@ -1489,32 +1496,39 @@ function metaRow(k, v, pp, cls){
   return '<div class="pr'+(cls?" "+cls:"")+'"><span class="k">'+k+'</span>'+
     '<span class="v">'+v+(pp?'<span class="pp">'+pp+'</span>':'')+'</span></div>';
 }
-function renderMeta(){
-  const m=S.meta, bar=$("#barMeta"), pop=$("#ctxPop");
-  if(!m || (!m.ctx && !m.total)){ bar.hidden=true; pop.hidden=true; return; }  // 全新会话不显示
-  bar.hidden=false;
-  const win=m.win||CTX_WINDOW, pct=Math.min(100, Math.round(m.ctx/win*100));
-  const warn=m.compact>0 ? m.ctx>=m.compact*0.9 : pct>=80;
-  $("#ctxRing").style.strokeDasharray="50.27"; $("#ctxRing").style.strokeDashoffset=String(50.27*(1-pct/100)); $("#ctxPct").textContent=pct+"%";
-  bar.classList.toggle("warn", warn); pop.classList.toggle("warn", warn);
-  const free=Math.max(0,win-m.ctx), fpct=Math.max(0,100-pct);
-  // 会话累计缓存命中率 = 累计缓存复用 / (累计缓存复用+累计非缓存输入);两个累计值
-  // 换模型也照样加(见后端 record_usage 注释),跨模型混算只当粗略参考,不是精确成本口径。
-  const hitBase=m.crt+m.ift, hitPct= hitBase>0 ? Math.round(m.crt/hitBase*100) : null;
-  const cid = S.conv || "";
-  pop.innerHTML =
-    '<div class="convid"><span class="k">会话 ID</span><span class="idv" title="'+esc(cid)+'">'+esc(cid)+'</span><button class="cpy" id="ctxCopyBtn" title="复制 ID">'+ic("copy")+'</button></div>'+
-    '<div class="ph"><span class="t">'+(m.cliWin?"CLI 生效窗口":"上下文窗口")+'</span><span class="m">'+fmtTok(m.ctx)+' / '+fmtTok(win)+' <b>'+pct+'%</b></span></div>'+
+function contextDetail(m, win, pct){
+  return '<div class="ph"><span class="t">'+(m.cliWin?"CLI 生效窗口":"上下文窗口")+'</span><span class="m">'+fmtTok(m.ctx)+' / '+fmtTok(win)+' <b>'+pct+'%</b></span></div>'+
     '<div class="pbar"><i style="width:'+pct+'%"></i></div>'+
     metaRow("已用上下文", fmtTok(m.ctx), pct+"%")+
-    metaRow("空闲", fmtTok(free), fpct+"%")+
-    (m.compact ? metaRow("CLI 自动压缩", m.compact<0?"已关闭":fmtTok(m.compact), "") : "")+
+    metaRow("空闲", fmtTok(Math.max(0,win-m.ctx)), (100-pct)+"%");
+}
+function tokenDetail(m){
+  const hitBase=m.crt+m.ift, hitPct=hitBase>0 ? Math.round(m.crt/hitBase*100) : null;
+  return (m.compact ? metaRow("CLI 自动压缩", m.compact<0?"已关闭":fmtTok(m.compact), "") : "")+
     metaRow("本轮新增输入", fmtTok(m.lin), "", "sep")+
     metaRow("其中缓存复用", fmtTok(m.lc), "", "sub")+
     metaRow("本轮输出", fmtTok(m.lout), "")+
     metaRow("累计消耗", fmtTok(m.total), "")+
-    (hitPct!=null ? metaRow("累计缓存命中率", hitPct+"%", "") : "")+
-    (m.model ? '<div class="pr sep"><span class="k">模型</span><span class="mdl">'+esc(m.model)+'</span></div>' : "");
+    (hitPct!=null ? metaRow("累计缓存命中率", hitPct+"%", "") : "");
+}
+function renderMeta(){
+  const m=S.meta, bar=$("#barMeta"), pop=$("#ctxPop"), model=curModel();
+  const agy=model.startsWith("agy-native:");
+  if(!m || (!agy && !m.ctx && !m.total)){ bar.hidden=true; pop.hidden=true; return; }
+  bar.hidden=false;
+  const useKnown=agy ? m.model===model && m.win>0 : m.ctx>0 && !m.model.startsWith("agy-native:");
+  const win=m.win||CTX_WINDOW, pct=useKnown ? Math.min(100, Math.round(m.ctx/win*100)) : null;
+  const warn=pct!=null && (m.compact>0 ? m.ctx>=m.compact*0.9 : pct>=80);
+  const ring=$("#ctxRing");
+  ring.style.strokeDasharray="50.27"; ring.style.strokeDashoffset=String(50.27*(1-(pct??0)/100));
+  $("#ctxPct").textContent=pct==null ? "—" : pct+"%";
+  bar.classList.toggle("warn", warn); pop.classList.toggle("warn", warn);
+  const cid=S.conv||"", usedModel=agy ? modelShort(model) : useKnown ? m.model : "";
+  pop.innerHTML =
+    '<div class="convid"><span class="k">会话 ID</span><span class="idv" title="'+esc(cid)+'">'+esc(cid)+'</span><button class="cpy" id="ctxCopyBtn" title="复制 ID">'+ic("copy")+'</button></div>'+
+    (pct==null ? metaRow("上下文窗口", "暂无用量数据", "") : contextDetail(m, win, pct))+
+    (agy ? "" : m.model.startsWith("agy-native:") ? metaRow("累计消耗", fmtTok(m.total), "") : tokenDetail(m))+
+    (usedModel ? '<div class="pr sep"><span class="k">模型</span><span class="mdl">'+esc(usedModel)+'</span></div>' : "");
   $("#ctxCopyBtn").onclick = e => { e.stopPropagation(); copyConvId(); };
 }
 function copyConvId(){
@@ -1707,7 +1721,7 @@ function buildTurnBlock(t, conv, isLast){
     appendVids(b, t.ai_videos);
     appendHtmlPreviews(b, t.html_previews, conv);
     appendArtifacts(b, t.artifacts, conv);
-    b.append(buildTurnFoot(conv, externalResult ? null : t.id, t.assistant, t.ts, isLast, interrupted));
+    b.append(buildTurnFoot(conv, externalResult ? null : t.id, t.assistant, t.ts, isLast && t.can_regenerate!==false, interrupted));
     wrap.append(row);
   }else if(t.draft || t.html_previews?.length || t.artifacts?.length){
     // 进行中但后端正流式写 draft:用部分内容起底兜底,避免刷新后空白;
@@ -1743,7 +1757,7 @@ function turnSig(t, isLast){
           (t.artifacts||[]).map(p=>p.id).join(","),
           (t.files||[]).length, (t.files||[]).map(f=>f.name||f.filename||f).join(","),
           (t.videos||[]).length, (t.ai_videos||[]).length, t.cron_job||"",
-          isLast?"L":""].join("|");
+          isLast?"L":"", t.can_regenerate===false?"NR":""].join("|");
 }
 let _wrapConv=null;
 let _convOpenSeq=0, _chatAnchor=null;

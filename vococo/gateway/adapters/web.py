@@ -39,7 +39,7 @@ from ...core.agent import AgentReply, FileAttachment
 from ...memory import session_store, workbench
 from .. import agy_trial
 from .. import git_status, settings_store, stats
-from ..core import COMMAND_LIST, MODEL_CHOICES, Choice, Sink, is_command
+from ..core import COMMAND_LIST, MODEL_CHOICES, Choice, Sink, blocked_model_commands, is_command
 from .base import AudioAttachment, ImageAttachment, Incoming, VideoAttachment
 from ..web_auth import check_media_ticket, check_web_auth, sign_media_ticket
 from .web_push import PUSH
@@ -148,6 +148,12 @@ async def _security_mw(request: web.Request, handler):
         resp.headers.setdefault("X-Frame-Options", "DENY")
         resp.headers.setdefault("Referrer-Policy", "no-referrer")
     return resp
+
+
+def _can_regenerate(key: str, turn_id: int | None) -> bool:
+    return (turn_id is not None
+            and not agy_trial.is_trial_model(session_store.get_chosen_model(key))
+            and turn_id > session_store.engine_context(key).get("cutoff", 0))
 
 
 class _WebSink(Sink):
@@ -330,6 +336,7 @@ class _WebSink(Sink):
                 # 这轮落库的 turn id:前端刚说完就能就地挂"复制/重新生成"按钮,
                 # 不用等下次打开会话才从 /history 里补——见 _handle_turn_regenerate。
                 "turn_id": turn_id,
+                "can_regenerate": _can_regenerate(key, turn_id),
                 "html_previews": session_store.turn_html_previews(key, turn_id),
                 "artifacts": session_store.turn_artifacts(key, turn_id),
                 "ctx_tokens": meta.get("ctx_tokens", 0),
@@ -342,6 +349,7 @@ class _WebSink(Sink):
                 "last_out": meta.get("last_out", 0),
                 "model": meta.get("model", ""),
                 "chosen_model": meta.get("chosen_model", ""),
+                "engine_segment": meta.get("engine_segment"),
                 "cache_read_total": meta.get("cache_read_total", 0),
                 "input_fresh_total": meta.get("input_fresh_total", 0),
             }
@@ -1584,7 +1592,7 @@ class WebAdapter:
         if self._model_switch_callback:
             self._model_switch_callback(session_key, model)
         return web.json_response({"ok": True, **session_store.session_summary(session_key),
-                                  "engine_segment": session_store.engine_context(session_key).get("segment")})
+                                  "blocked_commands": blocked_model_commands(model)})
 
     async def _summarize_title(
         self, conv: str, session_key: str, text: str, placeholder: str
@@ -2429,6 +2437,7 @@ class WebAdapter:
                 "service_tiers": tiers,
                 "agy_handoff": handoff and not agy_trial.is_native_model(chosen),
                 "engine_segment": session_store.engine_context(key).get("segment") if key else None,
+                "blocked_commands": blocked_model_commands(chosen or active_model),
                 "choices": [[v, label, group] for v, label, group in choices],
             }
         )
@@ -2845,6 +2854,8 @@ class WebAdapter:
             {"before_id": before_id} if before_id is not None else {}
         ))
         _tag_cron_turns(turns)
+        if turns and before_id is None:
+            turns[-1]["can_regenerate"] = _can_regenerate(key, turns[-1]["id"])
         # 打开会话就把还缺预览版的视频排上队转,别等用户点播放才开始
         for name in _sign_history_videos(turns):
             self._spawn_video_preview(name)
@@ -2915,8 +2926,7 @@ class WebAdapter:
         if not conv:
             return web.json_response({"error": "missing conv"}, status=400)
         key = config.resolve_session_key("web", conv)
-        if (agy_trial.is_trial_model(session_store.get_chosen_model(key))
-                or turn_id <= session_store.engine_context(key).get("cutoff", 0)):
+        if not _can_regenerate(key, turn_id):
             return web.json_response({"error": "此轮属于另一模型通道或使用了 Antigravity，不会自动重发。"}, status=409)
         user_text = session_store.delete_last_turn(key, turn_id)
         if user_text is None:

@@ -73,6 +73,41 @@ const api=async (path, opts)=>{
 ''')
 
 
+def test_context_recovers_from_sidebar_without_hiding_ordinary_turn_usage():
+    page = (STATIC / "index.html").read_text(encoding="utf-8")
+    sidebar = (STATIC / "sidebar.js").read_text(encoding="utf-8")
+    source = page[page.index("const CTX_WINDOW"):page.index("function updateUsageMeta(")]
+    source += page[page.index("function metaRow("):page.index("function copyConvId(")]
+    source += sidebar[sidebar.index("async function loadConvs(){"):sidebar.index("// 推送连上时")]
+    _run_node(source, r'''
+const assert=require("node:assert/strict");
+const agy="agy-native:gemini-4-neon", sdk="claude-sonnet-5-5";
+const S={conv:"x",models:{engine_segment:"a"},voiceSidebar:{},convs:[]};
+const permConvId=x=>x, isDraftConv=()=>false, esc=x=>x, ic=()=>"", modelShort=x=>x;
+const curModel=()=>S.model;
+const setModel=x=>{ S.model=x; renderMeta(); };
+const nodes=new Map();
+const $=id=>nodes.get(id) || nodes.set(id,{style:{},classList:{toggle(){}}}).get(id);
+const applyConvs=(d, refresh)=>{ S.convs=d; refillCurrentMeta(refresh); };
+const prefetchHistories=()=>{}, idbSet=()=>{};
+let _convsRequestId=0, respond;
+const api=()=>new Promise(resolve=>{ respond=d=>resolve({json:async()=>d}); });
+const snap=(used)=>({conv:"x",chosen_model:agy,model:agy,ctx_tokens:used,ctx_window:1000,engine_segment:"a"});
+(async()=>{
+  setMeta(snap(50));
+  const missed=loadConvs(); respond([snap(200)]); await missed;
+  assert.equal($("#ctxPct").textContent,"20%","侧栏能补回漏掉的同一会话段用量");
+  const delayed=loadConvs(); setMeta(snap(300)); respond([snap(200)]); await delayed;
+  assert.equal($("#ctxPct").textContent,"30%","迟到的侧栏回执不能覆盖实时快照");
+  setMeta({chosen_model:sdk,model:sdk,last_in:12,last_out:9,last_cache:3,total_tokens:24});
+  assert.equal($("#ctxPct").textContent,"—");
+  for(const label of ["本轮新增输入","其中缓存复用","本轮输出","累计消耗"]){
+    assert.ok($("#ctxPop").innerHTML.includes(label));
+  }
+})().catch(e=>{console.error(e);process.exitCode=1;});
+''')
+
+
 def test_manual_voice_transcript_has_its_pinned_model_and_preserves_draft():
     js = (STATIC / "composer.js").read_text(encoding="utf-8")
     source = js[js.index("function agyModelMarker("):js.index("async function send(")]

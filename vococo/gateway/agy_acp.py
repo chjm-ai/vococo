@@ -150,6 +150,15 @@ def _visible_updates(message, tool_state):
             yield ('delta' if kind == 'agent_message_chunk' else 'thinking'), text
 
 
+def _context_usage(update):
+    if not isinstance(update, dict) or update.get('sessionUpdate') != 'usage_update':
+        return None
+    used, size = update.get('used'), update.get('size')
+    if type(used) is int and type(size) is int and 0 <= used < 2**53 and 0 < size < 2**53:
+        return used, size
+    return None
+
+
 class _Client:
     def __init__(self, proc, allowed, approve=None, trace=None):
         self.proc = proc
@@ -261,6 +270,11 @@ class _Client:
                 if options is not None:
                     notified = options
                 elif not replay:
+                    if method == 'session/prompt':
+                        incoming = message.get('params') or {}
+                        usage = _context_usage(incoming.get('update'))
+                        if usage is not None and incoming.get('sessionId') == params['sessionId']:
+                            yield 'context_usage', usage
                     for event in _visible_updates(message, tool_state):
                         yield event
             elif inbound == 'session/request_permission':
