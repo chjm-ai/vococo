@@ -98,7 +98,9 @@ _SENSITIVE_FLAG = re.compile(r"(?i)(?:password|passwd|token|secret|credential|ap
 
 def _upstream_values(spec: dict) -> tuple[str, ...]:
     # 这些值仅用于本机过滤。既不进入 ACP MCP 描述，也不进入审批详情。
-    values = set(spec.get("env", {}).values())
+    values = {value for name, value in spec.get("env", {}).items()
+              if not ("FILTER" in name.upper().split("_") and not _SENSITIVE_FLAG.search(name)
+                      and value.casefold() in {"true", "false", "yes", "no", "0", "1"})}
     for name, value in spec.get("headers", {}).items():
         if name.casefold() not in ("content-type", "accept", "user-agent"):
             values.add(value)
@@ -153,7 +155,7 @@ def external_servers(names, denied) -> list[_External]:
     return servers
 
 
-def _still_enabled(session_key: str, external: _External) -> bool:
+def external_is_enabled(session_key: str, external: _External) -> bool:
     from ..memory import agents, session_store
 
     runtime = agents.runtime_for_session(session_key)
@@ -179,7 +181,8 @@ _bindings: dict[str, _Binding] = {}
 
 
 @asynccontextmanager
-async def mount(session_key: str, turn_id: int, workspace: str, *, external: _External | None = None):
+async def mount(session_key: str, turn_id: int, workspace: str, *, external: _External | None = None,
+                discovery: dict[str, str] | None = None):
     from ..memory import agents
     from ..tools import danger
     from .settings_store import vococo_enabled
@@ -192,7 +195,7 @@ async def mount(session_key: str, turn_id: int, workspace: str, *, external: _Ex
     denied = set(agents.runtime_for_session(session_key).get("disallowed_tools") or ())
     server_name = external.name if external else NAME
     if external:
-        tools = await _external_tools(external) if _still_enabled(session_key, external) else {}
+        tools = await _external_tools(external, discovery=discovery) if external_is_enabled(session_key, external) else {}
     elif vococo_enabled():
         tools = {name: tool for name, tool in _registry().items() if not _denied(name, denied)}
     else:
@@ -285,15 +288,19 @@ def _external_handler(external: _External, name: str):
     return invoke
 
 
-async def _external_tools(external: _External) -> dict:
+async def _external_tools(external: _External, *, discovery: dict[str, str] | None = None) -> dict:
     from ..tools.danger import redact_secrets
     from .agy_trial import _APPROVAL_SECRET, _AUTH_HEADER
 
+    stage = "initialize"
     try:
         async with asyncio.timeout(12), _external_client(external) as session:
+            stage = "list_tools"
             result = await session.list_tools()
-    except Exception:
-        return {}  # 本机可选服务失败，不把未过滤的上游错误带进会话。
+    except Exception as exc:
+        if discovery is not None:
+            discovery[external.name] = "timeout" if isinstance(exc, TimeoutError) else f"{stage}_failed"
+        return {}  # 只记录阶段，不把未过滤的上游异常带进会话。
     specs = {}
     for tool in result.tools[:80]:
         wire = tool.model_dump_json(by_alias=True)
@@ -302,6 +309,8 @@ async def _external_tools(external: _External) -> dict:
             continue
         specs[tool.name] = SimpleNamespace(name=tool.name, description=tool.description or "",
                                           input_schema=tool.input_schema, handler=_external_handler(external, tool.name))
+    if discovery is not None:
+        discovery[external.name] = "mounted" if specs else "no_eligible_tools"
     return specs
 
 
@@ -367,7 +376,7 @@ async def _invoke(binding: _Binding, name: str, args: dict) -> dict:
         return _result("疑似包含凭据，操作未执行。", error=True)
     async with binding.lock:
         if (not _active(binding) or (internal and not vococo_enabled())
-                or (binding.external and not _still_enabled(binding.session_key, binding.external))):
+                or (binding.external and not external_is_enabled(binding.session_key, binding.external))):
             return _result("本轮已结束或工具已关闭，操作未执行。", error=True)
         read_only = internal and (name in _READ or (name == "lark_document" and args.get("operation") == "fetch"))
         if not read_only:
@@ -388,11 +397,11 @@ async def _invoke(binding: _Binding, name: str, args: dict) -> dict:
                          else await _confirm_external(binding.server_name, name, detail))
             if not confirmed:
                 return _result("未批准，本次操作未执行。", error=True)
-        if not _active(binding) or (binding.external and not _still_enabled(binding.session_key, binding.external)):
+        if not _active(binding) or (binding.external and not external_is_enabled(binding.session_key, binding.external)):
             return _result("本轮已结束或工具配置发生变化，操作未执行。", error=True)
         if binding.external:
             result = await tool.handler(args, is_current=lambda: (
-                _active(binding) and _still_enabled(binding.session_key, binding.external)))
+                _active(binding) and external_is_enabled(binding.session_key, binding.external)))
         else:
             result = await tool.handler(args)
     blocks = result.get("content", ()) if isinstance(result, dict) else ()
@@ -462,7 +471,7 @@ async def handle(request: web.Request) -> web.Response:
         envelope["result"] = {"protocolVersion": protocol, "capabilities": {"tools": {}},
                               "serverInfo": {"name": binding.server_name, "version": "1"}}
     elif method == "tools/list":
-        if binding.external and not _still_enabled(binding.session_key, binding.external):
+        if binding.external and not external_is_enabled(binding.session_key, binding.external):
             raise web.HTTPUnauthorized(headers={"Cache-Control": "no-store"})
         envelope["result"] = {"tools": [{"name": tool.name, "description": tool.description, "inputSchema": tool.input_schema}
                                         for tool in binding.tools.values()]}

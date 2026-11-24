@@ -200,3 +200,35 @@ def test_command_preserves_multiline_text_without_zsh_expansion(tmp_path):
     assert result == f'{workspace}\n--prompt-interactive={sample}'
     blank = subprocess.check_output([node, '-e', js_cmd, str(workspace), ''], text=True)
     assert '--prompt-interactive' not in blank
+
+
+def test_website_context_reports_actual_external_mcp_state(tmp_path):
+    folder = tmp_path / "context"
+    folder.mkdir()
+    snapshot = folder / "agent-context.json"
+    snapshot.write_text('{"unmapped_vococo_mcp":["dataforseo","xpoz"]}', encoding="utf-8")
+    meta = {"agent_id": "general", "unmapped_vococo_mcp": ["dataforseo", "xpoz"]}
+    agy_handoff.record_external_mcp(tmp_path, meta, {"dataforseo": "initialize_failed", "xpoz": "mounted"})
+    payload = json.loads(snapshot.read_text(encoding="utf-8"))
+    assert payload["requested_external_mcp"] == ["dataforseo", "xpoz"]
+    assert payload["mounted_external_mcp"] == ["xpoz"]
+    assert payload["unmapped_vococo_mcp"] == ["dataforseo"]
+    assert payload["external_mcp_status"]["dataforseo"] == "initialize_failed"
+    agy_handoff.record_external_mcp(tmp_path, meta, {"dataforseo": "mounted", "xpoz": "timeout"})
+    assert json.loads(snapshot.read_text(encoding="utf-8"))["mounted_external_mcp"] == ["dataforseo"]
+
+
+def test_external_mcp_snapshot_rejects_symlinked_workspace_and_bounds_names(tmp_path):
+    real = tmp_path / "real"
+    (real / "context").mkdir(parents=True)
+    alias = tmp_path / "alias"
+    alias.symlink_to(real, target_is_directory=True)
+    with pytest.raises(OSError):
+        agy_handoff.record_external_mcp(alias, {}, {"visible": "mounted"})
+    assert not (real / "context" / "agent-context.json").exists()
+    oversized_name = "字" * 50_000
+    agy_handoff.record_external_mcp(real, {"unmapped_vococo_mcp": [oversized_name]},
+                                   {oversized_name: "not_eligible", "visible": "mounted"})
+    meta = json.loads((real / "context" / "agent-context.json").read_text())
+    assert meta["requested_external_mcp"] == ["visible"]
+    assert meta["mounted_external_mcp"] == ["visible"]

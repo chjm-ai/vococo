@@ -3,6 +3,7 @@
 import json
 import os
 import re
+import secrets
 import shutil
 import sys
 from contextlib import suppress
@@ -270,6 +271,42 @@ def prepare_into(workspace: Path, key: str, *, draft_owner: dict | None = None):
         target.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
         target.write_text(text, encoding='utf-8')
     return meta
+
+
+def record_external_mcp(workspace: Path, meta: dict, discovery: dict[str, str]) -> dict[str, str]:
+    """网页 ACP 启动前按实际发现刷新快照，不跟随可写工作区里的软链。"""
+    names = sorted(name for name in discovery if re.fullmatch(r'[A-Za-z0-9_-]{1,64}', name))[:128]
+    reported = {name: discovery[name] for name in names}
+    snapshot = {**meta, 'requested_external_mcp': names,
+                'mounted_external_mcp': [name for name in names if reported[name] == 'mounted'],
+                'unmapped_vococo_mcp': [name for name in names if reported[name] != 'mounted'],
+                'external_mcp_status': reported}
+    payload = json.dumps(snapshot, ensure_ascii=False, separators=(',', ':')).encode('utf-8')
+    if len(payload) > _MAX_FILE:
+        raise ValueError('交接上下文超出大小限制')
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    root = os.open(workspace, flags)
+    try:
+        folder = os.open('context', flags, dir_fd=root)
+        try:
+            _replace_context_file(folder, payload)
+        finally:
+            os.close(folder)
+    finally:
+        os.close(root)
+    return reported
+
+
+def _replace_context_file(folder: int, payload: bytes) -> None:
+    temporary = f'.agent-context-{secrets.token_hex(12)}'
+    fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=folder)
+    try:
+        with os.fdopen(fd, 'wb') as handle:
+            handle.write(payload)
+        os.replace(temporary, 'agent-context.json', src_dir_fd=folder, dst_dir_fd=folder)
+    finally:
+        with suppress(FileNotFoundError):
+            os.unlink(temporary, dir_fd=folder)
 
 
 def _portable_skill_from_docs(docs, name):
