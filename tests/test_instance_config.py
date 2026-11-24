@@ -3,6 +3,7 @@ import importlib.util
 import json
 import stat
 from pathlib import Path
+from unittest.mock import Mock
 
 import pytest
 
@@ -59,8 +60,25 @@ def test_instance_config_changes_need_approval(private_config):
     for tool in ("Write", "Edit"):
         assert danger.classify(tool, {"file_path": str(private_config)}, str(private_config.parent)) == (
             "escalate", danger.PERMISSION_CONFIG_REASON, True)
-    assert danger.classify("Bash", {"command": "python3 -c 'write(instance_config.json)'"}, str(private_config.parent))[0] == "escalate"
+    for spelling in ("instance_config.json", "INSTANCE_CONFIG.JSON"):
+        assert danger.classify("Bash", {"command": f"python3 -c 'write({spelling})'"}, str(private_config.parent))[0] == "escalate"
     assert danger.classify("Read", {"file_path": str(private_config)}, str(private_config.parent))[0] == "allow"
+
+
+@pytest.mark.parametrize("uid,mode,parent_mode,allowed", [
+    (0, stat.S_IFREG | 0o644, 0o755, True),
+    (501, stat.S_IFREG | 0o644, 0o755, False),
+    (0, stat.S_IFREG | 0o664, 0o755, False),
+    (0, stat.S_IFREG | 0o644, 0o775, False),
+    (0, stat.S_IFLNK | 0o644, 0o755, False),
+])
+def test_admin_marker_rejects_writable_or_untrusted_paths(uid, mode, parent_mode, allowed):
+    path = Mock()
+    path.parent.stat.return_value = Mock(st_uid=0, st_mode=stat.S_IFDIR | parent_mode)
+    path.lstat.return_value = Mock(st_uid=uid, st_mode=mode)
+    assert instance_config.admin_marker_enabled(path) is allowed
+    path.lstat.side_effect = FileNotFoundError
+    assert not instance_config.admin_marker_enabled(path)
 
 
 def _migration():

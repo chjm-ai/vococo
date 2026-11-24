@@ -3,7 +3,20 @@ from __future__ import annotations
 
 import json
 import os
+import stat
 from pathlib import Path
+
+
+def admin_marker_enabled(path: Path) -> bool:
+    """系统管理员一次授权：任务账户不能靠项目写权限自行打开。"""
+    try:
+        directory = path.parent.stat()
+        marker = path.lstat()
+    except OSError:
+        return False
+    return (stat.S_ISDIR(directory.st_mode) and stat.S_ISREG(marker.st_mode)
+            and directory.st_uid == marker.st_uid == 0
+            and not ((directory.st_mode | marker.st_mode) & 0o022))
 
 
 def section(name: str, *, path: Path | None = None) -> dict:

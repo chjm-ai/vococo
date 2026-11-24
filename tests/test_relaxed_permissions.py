@@ -26,6 +26,7 @@ def project(isolated, monkeypatch):
     ".venv/bin/python -m pip install requests", "cd . && npm install",
     "npm install && npm ci",
     "cd . && npm ci 2>&1 | tail -20", "uv sync | head -n 15",
+    "npm ci|tail", "uv sync 2>&1|tail", "uv sync|head -10",
 ])
 def test_project_dependencies_allow_without_interaction(project, command):
     token = danger.set_cwd(str(project))
