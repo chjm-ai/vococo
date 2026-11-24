@@ -123,7 +123,7 @@ def begin(session: str, turn_id: int, access: dict | None = None) -> str:
 
 def ensure_current(session: str) -> dict:
     pending = session_store._conn().execute(
-        "SELECT id FROM turns WHERE session_key=? AND user_text!='' AND assistant_text='' ORDER BY id DESC LIMIT 1",
+        "SELECT id FROM turns WHERE session_key=? AND user_text!='' AND in_progress=1 ORDER BY id DESC LIMIT 1",
         (session,),
     ).fetchone()
     if not pending:

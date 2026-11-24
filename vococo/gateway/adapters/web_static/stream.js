@@ -550,6 +550,7 @@ function connect(){
     // 重连补回断连期间漏掉的消息(尤其服务端自我重启后注入的系统消息)。force:重连这一刻
     // 恰是最容易出现"流式气泡卡死"的时候(断线期间 done 被环形缓冲挤掉),顺带核对一次。
     reloadHistory(true);
+    window.refreshPerm?.(S.conv);
     taskTree.schedule();
     if(typeof loadNotices==="function") loadNotices();  // 铃铛:补上断线期间的待处理项
     if(!firstOpen) checkShellVersion();
@@ -803,6 +804,9 @@ function deferCallTerminal(e){
 }
 function handleEvent(e){
   taskTree.event(e);
+  if(e.conv===S.conv && ["start","sidebar_refresh","done","cancelled"].includes(e.type)){
+    window.refreshPerm?.(e.conv);
+  }
   // 必须先拦再写 S.live，否则即使 DOM 不重建，侧栏黄点仍会重新亮起。
   if(S.stopping?.[e.conv]){
     if(["user","done","cancelled"].includes(e.type) || (e.type==="message" && !e.mid_turn)) delete S.stopping[e.conv];

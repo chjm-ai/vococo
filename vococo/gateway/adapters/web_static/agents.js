@@ -667,7 +667,7 @@ function renderApPermission(body, a){
     const sw=el("label","apcustom"); sw.innerHTML='<span class="sw"><input type="checkbox"'+(full?" checked":"")+'><span class="track"></span></span>';
     sw.querySelector("input").onchange=async ev=>{
       const on=ev.target.checked;
-      if(on && !confirm("给「"+a.name+"」开完全访问?\n\n它名下所有会话、后台任务和定时任务里,rm -rf、git push、装包、写项目外文件等操作都不再询问你(半夜的定时任务也会直接执行)。\n删根/格式化等灾难操作仍会被拦,疑似密钥外带仍会问你。")){ ev.target.checked=false; return; }
+      if(on && !confirm("给「"+a.name+"」默认开完全访问？\n\n继承此设置的会话和定时任务，执行 git push、装包、写项目外文件等操作时通常不再询问。\n会话覆盖和自动来源限制仍生效；灾难级操作仍会被拦，疑似密钥外带仍需确认。")){ ev.target.checked=false; return; }
       let r;
       try{ r=await agentPost("/agents/update",{id:a.id, permission:on?"full":"standard"}); }catch(e){ alert(e.message); draw(); return; }
       a.permission=r.agent.permission; draw(); loadAgents();
@@ -675,8 +675,8 @@ function renderApPermission(body, a){
     };
     head.append(t, sw); box.append(head);
     box.append(apEmpty(full
-      ? "已开:审批类操作自动放行,照样记进「设置 → 安全」的审批记录。单个会话可在输入框的权限胶囊里改回标准。"
-      : "关:危险操作(rm -rf、git push、装包、写项目外文件…)先问你。打开后名下会话和定时任务都免批。"));
+      ? "默认完全访问。单个会话可以覆盖；受限的自动来源不会继承此档位。免批记录见「设置 → 安全」。"
+      : "默认标准。常规危险操作先询问；单个会话可以在输入框的权限菜单里覆盖。"));
   };
   draw();
 }

@@ -213,12 +213,19 @@ async def _execution_cwd(root: str, session_key: str, candidate: str | None) -> 
     return root
 
 
-def conversation_workspace(session_key: str) -> str:
+def conversation_workspace_path(session_key: str) -> Path:
+    """只计算服务端分配的目录，不创建目录，也不解析会话目录内的软链。"""
     from .repository_locks import session_digest
 
-    path = config.AGENT_WORKSPACES_DIR / ".conversations" / session_digest(session_key)
+    return config.AGENT_WORKSPACES_DIR.expanduser().resolve() / ".conversations" / session_digest(session_key)
+
+
+def conversation_workspace(session_key: str) -> str:
+    path = conversation_workspace_path(session_key)
+    if path.resolve() != path:
+        raise WorktreeIsolationError("会话工作目录不能经过软链接，已停止执行。")
     path.mkdir(parents=True, exist_ok=True)
-    return str(path.resolve())
+    return str(path)
 
 
 async def execution_cwd(session_key: str) -> str:

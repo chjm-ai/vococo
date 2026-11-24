@@ -267,7 +267,7 @@ def flush_events(session_key: str, turn_id: int, events: list) -> None:
     """清单确认后立即存检查点，进程中断也不依赖内存事件流恢复。"""
     c = _conn()
     cursor = c.execute(
-        "UPDATE turns SET events=? WHERE session_key=? AND id=? AND assistant_text=''",
+        "UPDATE turns SET events=? WHERE session_key=? AND id=? AND in_progress=1",
         (json.dumps(events, ensure_ascii=False), session_key, turn_id),
     )
     snapshots = [block for block in events if block.get("type") == "checklist"]
@@ -312,21 +312,21 @@ def load_history(
         params.append(before_id)
     params.append(limit)
     rows = c.execute(
-        "SELECT id, ts, user_text, assistant_text, events, draft_text, images, audios, files, videos, html_previews "
+        "SELECT id, ts, user_text, assistant_text, events, draft_text, images, audios, files, videos, html_previews, in_progress "
         "FROM turns "
         f"{where} ORDER BY id DESC LIMIT ?",
         params,
     ).fetchall()
     out: list[dict] = []
-    for tid, ts, u, a, ev, draft, imgs, auds, files, vids, htmls in reversed(rows):
+    for tid, ts, u, a, ev, draft, imgs, auds, files, vids, htmls, in_progress in reversed(rows):
         try:
             events = json.loads(ev) if ev else []
         except (json.JSONDecodeError, ValueError):
             events = []
         if events and not full_events:
             events = _strip_events(events)
-        entry: dict = {"id": tid, "ts": ts, "user": u, "assistant": a, "pending": a == "", "events": events}
-        if a == "" and draft:
+        entry: dict = {"id": tid, "ts": ts, "user": u, "assistant": a, "pending": bool(in_progress), "events": events}
+        if in_progress and draft:
             entry["draft"] = draft
         # 图片:库里存文件名,给前端换成取图 URL(前端 <img src> 直接用)
         try:
@@ -418,7 +418,7 @@ def append_artifact(session_key: str, turn_id: int, filename: str, title: str, c
         raise ValueError("成果不能为空，且单个不能超过 64MB。")
     c = _conn()
     with c:
-        active = c.execute("SELECT 1 FROM turns WHERE id=? AND session_key=? AND assistant_text=''",
+        active = c.execute("SELECT 1 FROM turns WHERE id=? AND session_key=? AND in_progress=1",
                            (turn_id, session_key)).fetchone()
         if not active:
             raise ValueError("执行回合已结束或不属于当前会话。")
@@ -488,7 +488,7 @@ def append_html_preview(session_key: str, turn_id: int, entry: dict,
     if validate_source(data) != entry["html"]:
         raise ValueError("HTML 快照与原文件不一致。")
     active = _conn().execute(
-        "SELECT 1 FROM turns WHERE id=? AND session_key=? AND assistant_text=''",
+        "SELECT 1 FROM turns WHERE id=? AND session_key=? AND in_progress=1",
         (turn_id, session_key),
     ).fetchone()
     if not active:
@@ -705,17 +705,17 @@ def approval_origin(session_key: str, turn_id: int | None, notice_ts: float) -> 
 def active_source_access(session_key: str) -> dict:
     """只有当前执行轮的服务端来源有效；真人新轮次不继承自动派单权限。"""
     row = _conn().execute(
-        "SELECT source_access, assistant_text FROM turns WHERE session_key=? AND user_text!='' ORDER BY id DESC LIMIT 1",
+        "SELECT source_access, in_progress FROM turns WHERE session_key=? AND user_text!='' ORDER BY id DESC LIMIT 1",
         (session_key,),
     ).fetchone()
-    return json.loads(row[0]) if row and row[0] and not row[1] else {}
+    return json.loads(row[0]) if row and row[0] and row[1] else {}
 
 
 def start_turn(session_key: str, user_text: str, *, source_access: dict | None = None) -> int:
-    """入库进行中 turn(assistant_text 留空);返回 row id 供 finish_turn/cancel_turn 配对。"""
+    """入库并标记轮次进行中；返回 row id 供 finish_turn/cancel_turn 配对。"""
     c = _conn()
     cur = c.execute(
-        "INSERT INTO turns(session_key, ts, user_text, assistant_text, source_access) VALUES (?,?,?,'',?)",
+        "INSERT INTO turns(session_key, ts, user_text, assistant_text, source_access, in_progress) VALUES (?,?,?,'',?,1)",
         (session_key, time.time(), user_text, json.dumps(source_access) if source_access else None),
     )
     c.commit()
@@ -746,7 +746,7 @@ def finish_turn(
             ev_json = json.dumps(events, ensure_ascii=False)
         except (TypeError, ValueError):
             ev_json = None  # 时间线序列化失败不影响正文落库
-    sql = "UPDATE turns SET assistant_text=?, events=?, draft_text='', failed=?, ts=? WHERE id=?"
+    sql = "UPDATE turns SET assistant_text=?, events=?, draft_text='', failed=?, ts=?, in_progress=0 WHERE id=?"
     params: tuple = (assistant_text, ev_json, int(failed), time.time(), turn_id)
     if session_key is not None:
         sql += " AND session_key=?"
@@ -759,7 +759,7 @@ def finish_turn(
 def cancel_turn(turn_id: int, *, session_key: str | None = None) -> bool:
     """AI 回复出错/取消时删掉进行中的 turn,避免孤儿 pending 行残留。"""
     c = _conn()
-    sql = "DELETE FROM turns WHERE id=? AND assistant_text=''"
+    sql = "DELETE FROM turns WHERE id=? AND in_progress=1"
     params: tuple = (turn_id,)
     if session_key is not None:
         sql += " AND session_key=?"
@@ -772,8 +772,8 @@ def cancel_turn(turn_id: int, *, session_key: str | None = None) -> bool:
 def delete_last_turn(session_key: str, turn_id: int) -> str | None:
     """删掉某会话「最后一轮」,返回其 user_text 供调用方重新入队(= 前端"重新生成")。
 
-    只允许删最新一轮(核对 id 与 DESC LIMIT 1 查到的一致)且该轮已完成
-    (assistant_text 非空)——防止前端拿着过期/进行中的 turn_id 误删,打乱
+    只允许删最新一轮(核对 id 与 DESC LIMIT 1 查到的一致)且该轮已完成，
+    防止前端拿着过期/进行中的 turn_id 误删,打乱
     后续轮次的上下文连续性。不满足条件返回 None,调用方据此拒绝这次请求。
 
     注:SDK 会话走 resume 续聊,被删掉这轮的问答在模型侧 resume 的 transcript
@@ -782,10 +782,10 @@ def delete_last_turn(session_key: str, turn_id: int) -> str | None:
     """
     c = _conn()
     row = c.execute(
-        "SELECT id, user_text, assistant_text FROM turns WHERE session_key=? ORDER BY id DESC LIMIT 1",
+        "SELECT id, user_text, in_progress FROM turns WHERE session_key=? ORDER BY id DESC LIMIT 1",
         (session_key,),
     ).fetchone()
-    if not row or row[0] != turn_id or row[2] == "":
+    if not row or row[0] != turn_id or row[2]:
         return None
     c.execute("DELETE FROM turns WHERE id=?", (turn_id,))
     c.commit()
@@ -814,13 +814,13 @@ def recover_interrupted_turns() -> list[dict]:
     """
     c = _conn()
     rows = c.execute(
-        "SELECT id, session_key, user_text, events FROM turns WHERE assistant_text=''"
+        "SELECT id, session_key, user_text, events FROM turns WHERE in_progress=1"
     ).fetchall()
     if not rows:
         return []
     message = "⚠️ 服务重启导致本轮回复中断，请重新发送。"
     c.executemany(
-        "UPDATE turns SET assistant_text=?, events=?, draft_text='', failed=1, ts=? WHERE id=?",
+        "UPDATE turns SET assistant_text=?, events=?, draft_text='', failed=1, ts=?, in_progress=0 WHERE id=?",
         [(message, _interrupted_events(row[3]), time.time(), row[0]) for row in rows],
     )
     c.commit()

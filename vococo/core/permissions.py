@@ -50,7 +50,8 @@ def state(session_key: str, now: float | None = None) -> dict:
     """会话当前的权限状态,给前端胶囊和审批闸共用。
 
     返回 {mode, source, session_mode, until, agent_mode, agent_name, allowed}:
-    mode=最终生效档位;source=session/agent/default;allowed=False 表示此会话不能开(群聊)。
+    mode=最终生效档位;source=session/agent/default/automatic_source。
+    session_mode 和 agent_mode 是配置值，可能受本轮自动来源限制；allowed=False 表示群聊不能开。
     """
     now = time.time() if now is None else now
     out = {"mode": STANDARD, "source": "default", "session_mode": "", "until": 0.0,
@@ -66,9 +67,8 @@ def state(session_key: str, now: float | None = None) -> dict:
         a = None
     if a:
         out["agent_name"] = a["name"]
-        out["agent_mode"] = a.get("permission") or STANDARD
-        if out["agent_mode"] == FULL:
-            out.update(mode=FULL, source="agent")
+        out["agent_mode"] = FULL if a.get("permission") == FULL else STANDARD
+        out.update(mode=out["agent_mode"], source="agent")
     mode, until = _session_override(session_key, now)
     if mode:
         out.update(mode=mode, source="session", session_mode=mode, until=until)

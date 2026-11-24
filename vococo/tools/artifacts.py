@@ -2,8 +2,10 @@
 from __future__ import annotations
 
 import asyncio
+import errno
 import io
 import lzma
+import os
 import stat
 import tarfile
 import zipfile
@@ -35,44 +37,137 @@ def _delivery_links(session_key: str) -> tuple[Path, ...]:
     return tuple(safe)
 
 
-def _repository_checkouts(session_key: str, policy) -> set[Path]:
-    if policy:
-        return {binding.checkout for binding in getattr(policy, "repositories", ())}
+def _repository_checkouts(session_key: str) -> tuple[Path, ...]:
     from ..core.business_repositories import copies_for_session
     from ..memory import agents
 
     owner = agents.agent_for_session(session_key)
-    return {binding.checkout for binding in copies_for_session(owner, session_key)} if owner else set()
+    return tuple(binding.checkout for binding in copies_for_session(owner, session_key)) if owner else ()
 
 
-def _roots(session_key: str, cwd: str) -> tuple[Path, ...]:
+def _inside_protected(path: Path, root: Path) -> bool:
+    # macOS 默认卷不区分大小写；拒绝时覆盖别名，授权仍要求精确匹配。
+    return Path(str(path).casefold()).is_relative_to(Path(str(root).casefold()))
+
+
+def _checked_root(root: Path, reserved: Path | None = None) -> Path:
+    parts = root.parts[1:]
+    if reserved is not None:
+        index = len(reserved.parts) - 2
+        parts = (*parts[:index], *parts[index + 1:])
+    _check_parts(parts)
+    return root
+
+
+def _worktree_root(candidate: Path, session_key: str) -> Path | None:
+    from .. import config
+    from ..memory import session_store
+
+    bound = session_store.get_worktree(session_key)
+    current = Path(bound) if bound else None
+    runtime = config.DATA_DIR.resolve()
+    in_runtime = _inside_protected(candidate, runtime)
+    if any(_inside_protected(candidate, Path(path))
+           for path in session_store.all_worktree_paths(excluding_session=session_key)):
+        raise ValueError("不允许交付其他会话的工作树文件。")
+    if current and candidate.is_relative_to(current):
+        if not in_runtime or current.is_relative_to(runtime / "worktrees"):
+            # 旧版 SDK 工作树只豁免已登记根路径上的 .claude 这一段。
+            legacy = next((p for p in current.parents if p.name == "worktrees" and p.parent.name == ".claude"), None)
+            return _checked_root(current, legacy.parent if legacy else None)
+    if in_runtime:
+        raise ValueError("不允许交付运行数据或其他会话的工作树文件。")
+    return None
+
+
+def _managed_root(candidate: Path, session_key: str) -> Path | None:
+    from ..core.worktree import conversation_workspace_path
+
+    workspace = conversation_workspace_path(session_key)
+    if _inside_protected(candidate, workspace.parent):
+        if candidate.is_relative_to(workspace):
+            return _checked_root(workspace, workspace.parent)
+        raise ValueError("不允许交付其他会话的工作目录文件。")
+    repositories = workspace.parent.with_name(".repositories")
+    if _inside_protected(candidate, repositories):
+        for checkout in _repository_checkouts(session_key):
+            if candidate.is_relative_to(checkout):
+                return _checked_root(checkout, repositories)
+        raise ValueError("不允许交付未授权的仓库副本文件。")
+    return _worktree_root(candidate, session_key)
+
+
+def _source_root(candidate: Path, session_key: str, cwd: str) -> Path | None:
     from ..core.execution import policy_for_session
+    from ..core.permissions import is_full
 
+    root = _managed_root(candidate, session_key)
+    if root is not None:
+        return root
+    _check_parts(candidate.parts[1:])
+    if is_full(session_key):
+        # 普通文件不检查无关的 cwd、成果目录或关联目录。
+        return candidate.parent
     policy = policy_for_session(session_key, cwd)
-    checkouts = _repository_checkouts(session_key, policy)
     roots = (policy.workspace, policy.output_dir) if policy else (Path(cwd),)
-    roots = tuple(dict.fromkeys((*roots, *_delivery_links(session_key), *sorted(checkouts))))
-    safe = []
-    for root in roots:
-        root = root.expanduser().resolve()
-        # HOME 及其祖先不是项目；即使错误配置也不能变成任意文件下载。
-        if Path.home().resolve().is_relative_to(root) or root == Path(root.anchor):
-            from ..core.permissions import is_full
-
-            if is_full(session_key):
-                continue  # 完全访问按具体目标读取，不把 HOME 或磁盘根登记为交付来源。
-            raise ValueError("工作目录过宽，不能安全交付文件。")
-        parts = root.parts[1:]
-        # SDK 开发 worktree 位于 .claude/worktrees；这不是读取 .claude 凭据的授权。
-        _check_parts(tuple(part for i, part in enumerate(parts)
-                           if not (part == ".claude" and parts[i + 1:i + 2] == ("worktrees",))
-                           and not (part == ".repositories" and root in checkouts)))
-        safe.append(root)
-    return tuple(safe)
+    home = Path.home().resolve()
+    return next((root for root in (*roots, *_delivery_links(session_key))
+                 if not home.is_relative_to(root) and candidate.is_relative_to(root)), None)
 
 
-def _read_source(root: Path, parts: tuple[str, ...]) -> bytes:
-    return read_regular(root, parts, MAX_BYTES)
+def _directory_rules(root: Path, session_key: str):
+    from .. import config
+    from ..core.repository_cleanup import retained_copy_paths
+    from ..core.worktree import _wt_base, conversation_workspace_path
+    from ..memory import session_store
+
+    workspace = conversation_workspace_path(session_key)
+    repositories = workspace.parent.with_name(".repositories")
+    bound = session_store.get_worktree(session_key)
+    owns_tree = bound is not None and root == Path(bound)
+    runtime = config.DATA_DIR.resolve()
+    yield workspace.parent, root == workspace
+    yield repositories, root.is_relative_to(repositories)  # 已由 _managed_root 校验归属。
+    yield runtime, owns_tree and root.is_relative_to(runtime / "worktrees")
+    for project in session_store.list_projects(include_hidden=True):
+        base = _wt_base(project["path"])
+        yield base, owns_tree and root.is_relative_to(base)
+    for path in session_store.all_worktree_paths(excluding_session=session_key):
+        yield Path(path), False
+    # 先查现有绑定，再读删除前落盘的保留记录，避免会话在两次读取之间被删除。
+    for path in retained_copy_paths():
+        yield path, False
+
+
+def _directory_guard(root: Path, session_key: str):
+    rules: dict[tuple[int, int], Path | None] = {}
+    for path, allowed in _directory_rules(root, session_key):
+        try:
+            info = path.stat()
+        except (FileNotFoundError, NotADirectoryError):
+            continue
+        identity = (info.st_dev, info.st_ino)
+        permitted = path if allowed else None
+        if rules.setdefault(identity, permitted) != permitted:
+            rules[identity] = None
+
+    def check(path: Path, fd: int) -> None:
+        # 按实际打开的目录身份检查，路径的 Unicode、大小写或挂载别名不扩大授权。
+        info = os.fstat(fd)
+        identity = (info.st_dev, info.st_ino)
+        if identity in rules and rules[identity] != path:
+            raise ValueError("不允许交付其他会话的私有目录或运行数据文件。")
+
+    return check
+
+
+def _read_source(root: Path, parts: tuple[str, ...], session_key: str) -> bytes:
+    try:
+        return read_regular(root, parts, MAX_BYTES, check_directory=_directory_guard(root, session_key))
+    except OSError as exc:
+        if exc.errno in {errno.ELOOP, errno.ENOTDIR}:
+            raise ValueError("不接受软链或无效目录。") from exc
+        raise OSError(f"无法读取本地文件：{exc.strerror or exc}") from exc
 
 
 def _check_key_container(filename: str) -> None:
@@ -169,34 +264,28 @@ def _snapshot(path: str, session_key: str, cwd: str) -> tuple[str, bytes]:
     if not isinstance(path, str) or not path.strip() or "://" in path or "\x00" in path or "\\" in path:
         raise ValueError("path 必须是本地成果文件路径。")
     candidate = Path(path).expanduser()
-    candidate = candidate if candidate.is_absolute() else Path(cwd).resolve() / candidate
+    candidate = candidate if candidate.is_absolute() else Path(cwd).absolute() / candidate
+    if candidate.anchor == "//":  # POSIX 可把双斜线作为独立锚点，目录检查与实际打开必须一致。
+        candidate = Path("/", *candidate.parts[1:])
     if ".." in candidate.parts:
-        raise ValueError("不接受目录逃逸。")
-    from .. import config
-
-    from ..core.permissions import is_full
-
-    runtime = config.DATA_DIR.resolve()
-    roots = _roots(session_key, cwd)
-    if (is_full(session_key) and not candidate.resolve().is_relative_to(runtime)
-            and not any(candidate.is_relative_to(root) for root in roots)):
-        # 完全访问只放宽来源目录；秘密检查、NOFOLLOW 和运行数据保护仍然生效。
-        _check_parts(candidate.parts[1:])
-        roots = (*roots, candidate.parent)
-    for root in roots:
-        if candidate.is_relative_to(root):
+        raise ValueError("文件保护：不接受目录逃逸。")
+    try:
+        root = _source_root(candidate, session_key, cwd)
+        if root is not None:
             parts = candidate.relative_to(root).parts
+            if not parts:
+                raise ValueError("请选择文件，不能交付目录本身。")
             _check_parts(parts)
             _check_key_container(candidate.name)
-            if candidate.is_relative_to(runtime) and not root.is_relative_to(runtime):
-                raise ValueError("运行数据目录不是当前会话的成果来源。")
-            data = _read_source(root, parts)
+            data = _read_source(root, parts, session_key)
             _check_secrets(data)
             _check_unsupported_archive(candidate.name, data)
             if candidate.suffix.lower() in ARCHIVES or data.startswith(b"PK\x03\x04") or _is_zip(data):
                 _check_archive(data)
             return candidate.name, data
-    raise ValueError("文件不在当前会话工作目录或正式成果目录内，未读取。")
+    except ValueError as exc:
+        raise ValueError(f"文件保护：{exc}") from exc
+    raise ValueError("目录未授权：标准权限只允许交付本会话工作目录、正式成果目录或已授权目录内的文件。")
 
 
 async def snapshot(path: str, session_key: str) -> tuple[str, bytes]:

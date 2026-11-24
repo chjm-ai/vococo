@@ -10,6 +10,7 @@ import json
 import logging
 import math
 import os
+import stat
 import time
 from pathlib import Path
 
@@ -262,6 +263,26 @@ def record_retained_session(session_key: str, results: list[dict]) -> None:
                                 ensure_ascii=False) + "\n")
         handle.flush()
         os.fsync(handle.fileno())
+
+
+def retained_copy_paths() -> set[Path]:
+    """删除会话后绑定不再可查，保留副本仍不能成为其他会话的附件来源。"""
+    try:
+        fd = os.open(config.DATA_DIR / "retained-session-copies.jsonl", os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except FileNotFoundError:
+        return set()
+    paths = set()
+    with os.fdopen(fd, encoding="utf-8") as handle:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise ValueError("无法核对保留副本记录。")
+        fcntl.flock(handle, fcntl.LOCK_SH)
+        for line in handle:
+            for result in json.loads(line)["results"]:
+                if not result.get("removed"):
+                    path = Path(result["path"])
+                    if path.is_absolute():
+                        paths.add(path)
+    return paths
 
 
 async def sweep() -> list[dict]:

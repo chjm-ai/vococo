@@ -1,7 +1,9 @@
 """文件成果真实工具、临时 SQLite、认证下载与来源边界。"""
 import io
 import os
+import unicodedata
 import zipfile
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -401,6 +403,132 @@ async def test_writable_links_share_write_and_private_delivery_authorization(con
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize("mode", ["standard", "full"])
+async def test_conversation_workspace_and_external_docx_use_effective_permission(context, mode):
+    from vococo.core import permissions, worktree
+
+    _, key, tid, events, root = context
+    current = Path(worktree.conversation_workspace(key))
+    other = Path(worktree.conversation_workspace("web:other"))
+    downloads = root.parent / "Downloads"
+    downloads.mkdir()
+    stream = io.BytesIO()
+    with zipfile.ZipFile(stream, "w") as archive:
+        archive.writestr("word/document.xml", "<document>报价单</document>")
+    content = stream.getvalue()
+    for directory in (current, other):
+        (directory / "报价单.docx").write_bytes(content)
+    external = downloads / "外部报价单.docx"
+    external.write_bytes(content)
+    (current / ".env").write_text("内容")
+    permissions.set_session(key, mode)
+    token = danger.set_cwd(str(current))
+    try:
+        assert "已交付" in await call("报价单.docx")
+        assert "文件保护" in await call(other / "报价单.docx")
+        assert "文件保护" in await call(".env")
+        text = await call(external)
+        assert ("已交付" if mode == "full" else "目录未授权") in text
+        entries = session_store.turn_artifacts(key, tid)
+        assert len(entries) == len(events) == (2 if mode == "full" else 1)
+        assert session_store.artifact_content(key, entries[0]["id"]) == ("报价单.docx", content)
+    finally:
+        danger.reset_cwd(token)
+
+
+@pytest.mark.anyio
+async def test_full_external_attachment_retains_file_protection(context, monkeypatch):
+    from vococo.core import execution, permissions
+
+    _, key, _, events, root = context
+    external = root.parent / "Downloads"
+    external.mkdir()
+    normal, secret, hard = (external / name for name in ("notes.txt", "example.pem", "hard.txt"))
+    normal.write_text("普通成果")
+    secret.write_text("不交付密钥容器")
+    (external / "alias.txt").symlink_to(normal)
+    hard.write_text("包含硬链接")
+    os.link(hard, external / "hard-alias.txt")
+    runtime = config.DATA_DIR / "internal.txt"
+    runtime.write_text("运行数据")
+    permissions.set_session(key, "full")
+
+    def unrelated_policy(*args):
+        raise AssertionError("普通外部文件不得检查不相关的目录配置")
+
+    monkeypatch.setattr(execution, "policy_for_session", unrelated_policy)
+    assert "已交付" in await call(normal)
+    for file in (secret, runtime, "/" + str(runtime), external / "alias.txt", hard):
+        assert "文件保护" in await call(file)
+    assert len(events) == 1
+
+
+def test_conversation_workspace_rejects_symlink_binding(context):
+    from vococo.core import worktree
+
+    _, key, _, _, root = context
+    private = worktree.conversation_workspace_path(key)
+    private.parent.mkdir(parents=True)
+    private.symlink_to(root, target_is_directory=True)
+    with pytest.raises(worktree.WorktreeIsolationError, match="不能经过软链接"):
+        worktree.conversation_workspace(key)
+
+
+@pytest.mark.anyio
+async def test_full_cannot_deliver_worktree_left_after_session_deletion(context):
+    from vococo.core import permissions, repository_cleanup
+
+    _, key, _, events, root = context
+    permissions.set_session(key, "full")
+    private = root.parent / "已删除会话的旧副本"
+    private.mkdir()
+    document = private / "notes.txt"
+    document.write_text("保留成果")
+    deleted = "web:deleted"
+    session_store.set_worktree(deleted, str(private))
+    repository_cleanup.record_retained_session(deleted, [{"path": str(private), "removed": False}])
+    session_store.delete_session(deleted)
+    assert session_store.get_worktree(deleted) is None
+    assert "文件保护" in await call(document)
+    assert not events
+
+
+@pytest.mark.anyio
+async def test_full_checks_directory_identity_not_just_path_spelling(context):
+    from vococo.core import permissions
+
+    _, key, _, events, root = context
+    permissions.set_session(key, "full")
+    private = root.parent / "protégé"
+    private.mkdir()
+    document = private / "notes.txt"
+    document.write_text("其他会话成果")
+    session_store.set_worktree("web:other", str(private))
+    alternate = Path(unicodedata.normalize("NFD", str(document)))
+    if not alternate.is_file():
+        pytest.skip("当前文件系统不把这两种 Unicode 拼写识别为同一路径")
+    assert "文件保护" in await call(alternate)
+    assert not events
+
+
+@pytest.mark.anyio
+async def test_automatic_source_cannot_borrow_full_for_external_attachment(context):
+    from vococo.core import permissions
+
+    adapter, key, _, events, root = context
+    permissions.set_session(key, "full")
+    turn = session_store.start_turn(key, "受限后台任务", source_access={"mode": "standard"})
+    route = clarify.set_current(key, adapter, "files-test", turn)
+    try:
+        external = root.parent / "external.txt"
+        external.write_text("普通文件")
+        assert "目录未授权" in await call(external)
+        assert not events and not session_store.turn_artifacts(key, turn)
+    finally:
+        clarify.reset_current(route)
+
+
+@pytest.mark.anyio
 async def test_unsafe_link_does_not_block_normal_delivery_or_expose_runtime(context):
     from vococo.core import execution
     from vococo.memory import agents
@@ -457,18 +585,25 @@ async def test_context_closed_turn_failure_and_no_home_fallback(context, monkeyp
 
 @pytest.mark.anyio
 async def test_development_worktree_and_sibling_session_isolation(context):
-    root = context[-1] / ".claude" / "worktrees" / "current"
-    sibling = root.parent / "other"
+    from vococo.core import permissions
+
+    _, key, _, _, project = context
+    root = project / ".claude" / "worktrees" / "current"
+    sibling = project / "data" / "worktrees" / "other"
     for folder in (root, sibling):
         folder.mkdir(parents=True)
         (folder / "result.txt").write_text("成果")
+    session_store.set_worktree(key, str(root))
+    session_store.set_worktree("web:other", str(sibling))
     token = danger.set_cwd(str(root))
     try:
-        assert "已交付" in await call("result.txt")
-        assert "未交付" in await call(sibling / "result.txt")
+        for mode in ("standard", "full"):
+            permissions.set_session(key, mode)
+            assert "已交付" in await call("result.txt")
+            assert "其他会话" in await call(sibling / "result.txt")
     finally:
         danger.reset_cwd(token)
-    hidden = context[-1] / ".ssh"
+    hidden = project / ".ssh"
     hidden.mkdir()
     (hidden / "result.txt").write_text("sensitive")
     token = danger.set_cwd(str(hidden))

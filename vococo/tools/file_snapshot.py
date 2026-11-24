@@ -1,6 +1,7 @@
 """成果与静态预览共用的受控读取；调用方各自决定授权根目录与格式。"""
 from __future__ import annotations
 
+from collections.abc import Callable
 import os
 from pathlib import Path
 import re
@@ -13,14 +14,21 @@ def check_parts(parts: tuple[str, ...]) -> None:
         raise ValueError("不支持隐藏目录、凭据目录或秘密文件。")
 
 
-def read_regular(root: Path, parts: tuple[str, ...], max_bytes: int) -> bytes:
+def read_regular(root: Path, parts: tuple[str, ...], max_bytes: int, *,
+                 check_directory: Callable[[Path, int], None] | None = None) -> bytes:
     # 从磁盘根逐级 NOFOLLOW，连授权根本身也不能在检查后被换成软链。
+    directory = Path(root.anchor)
     fd = os.open(root.anchor, os.O_RDONLY | os.O_DIRECTORY)
     try:
         for part in (*root.parts[1:], *parts[:-1]):
+            if check_directory is not None:
+                check_directory(directory, fd)
+                directory /= part
             child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
             os.close(fd)
             fd = child
+        if check_directory is not None:
+            check_directory(directory, fd)
         file_fd = os.open(parts[-1], os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=fd)
         with os.fdopen(file_fd, "rb") as source:
             info = os.fstat(source.fileno())
