@@ -803,6 +803,9 @@ function deferCallTerminal(e){
 }
 function handleEvent(e){
   taskTree.event(e);
+  if(e.conv===S.conv && ["start","sidebar_refresh","done","cancelled"].includes(e.type)){
+    window.refreshPerm?.(e.conv);
+  }
   // 必须先拦再写 S.live，否则即使 DOM 不重建，侧栏黄点仍会重新亮起。
   if(S.stopping?.[e.conv]){
     if(["user","done","cancelled"].includes(e.type) || (e.type==="message" && !e.mid_turn)) delete S.stopping[e.conv];

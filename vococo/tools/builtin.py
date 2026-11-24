@@ -1363,11 +1363,11 @@ async def send_image(args: dict) -> dict:
 @tool(
     "send_file",
     "把本地文件作为可下载附件交付当前 Web 会话，不限制文件扩展名，单个不超过 64MB。"
-    "代码文件和含代码的压缩包可直接发送，无需代码审核。path 为当前工作目录内的"
-    "相对或绝对路径；另允许业务正式 output_dir 和当前 Agent 的关联目录。完全访问无需关联目录。拒绝软链、凭据、目录逃逸及"
-    "其他会话文件；完全访问也不解除秘密文件和运行数据保护。title 可选，120字以内。"
+    "代码文件和含代码的压缩包可直接发送，无需代码审核。path 可用相对或绝对路径。"
+    "标准权限仅允许本会话工作目录、业务正式成果目录及已授权目录；完全访问可直接交付系统可读的普通文件，无需关联目录。"
+    "两档都拒绝软硬链接、凭据、目录逃逸、运行数据及其他会话的私有文件。title 可选，120字以内。"
     "保存私有快照，刷新仍可下载；有效 UTF-8 HTML（≤200KB）附带静态预览。"
-    "不公开发布、不收录图片作品库。仅 Web 支持。",
+    "仅支持已连接 Web 附件通道的执行回合。未交付时明确说明原因，不要自动改为公开发布。",
     {"type": "object", "properties": {"path": {"type": "string"}, "title": {"type": "string"}},
      "required": ["path"]},
 )
@@ -1378,12 +1378,12 @@ async def send_file(args: dict) -> dict:
 
     ctx = clarify.current()
     if ctx is None or not isinstance(ctx.adapter, WebAdapter):
-        return _ok("当前渠道不支持文件附件（仅 Web 支持）；未交付。") | {"isError": True}
+        return _ok("文件未交付：附件通道不可用。当前执行未连接 Web 附件通道（仅 Web 支持）。") | {"isError": True}
     title = args.get("title", "")
     if not isinstance(title, str) or len(title) > 120:
         return _ok("文件未交付：title 必须是 120 字以内的文字。") | {"isError": True}
     if ctx.turn_id is None:
-        return _ok("当前没有绑定的执行回合；文件未交付。") | {"isError": True}
+        return _ok("文件未交付：附件通道不可用。当前没有绑定的执行回合。") | {"isError": True}
     try:
         if ctx.session_key != config.resolve_session_key("web", str(ctx.chat_id)):
             return _ok("会话路由不匹配；文件未交付。") | {"isError": True}

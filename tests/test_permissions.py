@@ -37,8 +37,23 @@ def _hook_as_task(tool_name: str, tool_input: dict) -> dict:
 
 
 def test_default_is_standard(agent_mode):
-    st = permissions.state(KEY)
+    st = permissions.state("web:no-agent")
     assert st["mode"] == "standard" and st["source"] == "default"
+    st = permissions.state(KEY)
+    assert st["mode"] == "standard" and st["source"] == "agent"
+
+
+def test_automatic_source_is_reported_only_while_the_turn_is_active(agent_mode):
+    agent_mode["permission"] = "full"
+    permissions.set_session(KEY, "full", hours=2)
+    tid = session_store.start_turn(KEY, "后台指令", source_access={"mode": "standard", "remote_brain": True})
+    st = permissions.state(KEY)
+    assert st["mode"] == "standard" and st["source"] == "automatic_source"
+    assert st["session_mode"] == st["agent_mode"] == "full" and st["until"] > time.time()
+    assert not permissions.is_full(KEY)
+    session_store.finish_turn(tid, "完成")
+    st = permissions.state(KEY)
+    assert st["mode"] == "full" and st["source"] == "session"
 
 
 def test_agent_full_applies(agent_mode):

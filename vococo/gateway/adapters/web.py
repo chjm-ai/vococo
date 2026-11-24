@@ -836,7 +836,7 @@ class WebAdapter:
         if session_key != config.resolve_session_key("web", str(chat_id)):
             raise ValueError("会话路由不匹配。")
         if redact_secrets(filename + title) != filename + title:
-            raise ValueError("文件名或标题含疑似密钥。")
+            raise ValueError("文件保护：文件名或标题含疑似密钥。")
         entry = session_store.append_artifact(session_key, turn_id, filename, title, content)
         self._emit({"conv": str(chat_id), "type": "message", "text": "",
                     "artifacts": [entry], "html_previews": session_store.turn_html_previews(session_key, turn_id),
