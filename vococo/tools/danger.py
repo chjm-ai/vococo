@@ -647,15 +647,17 @@ def _looks_like_secret_exfil(cmd: str) -> bool:
 # 会改写文件系统的工具 → 检查目标是否落在工作目录外
 _WRITE_TOOLS = {"Write", "Edit", "MultiEdit", "NotebookEdit"}
 
-# 外部 MCP 写操作白名单:命中 → escalate 请批准(cron/无交互通道直接拒)。
-# 与精简 MCP 的全部远端改写工具一一对应,新增写工具时这里同步加。
+# 已知的外部改写操作要审批；注册别名不是授权边界。
 _MCP_WRITE_TOOLS = frozenset({
-    "mcp__lemlist_lite__send_email",
-    "mcp__lemlist_lite__add_campaign_lead",
-    "mcp__lemlist_lite__delete_campaign_lead",
-    "mcp__lemlist_lite__upsert_contact",
-    "mcp__lemlist_lite__delete_contact",
+    "send_email", "add_campaign_lead", "delete_campaign_lead", "upsert_contact", "delete_contact",
 })
+
+
+def _is_mcp_write_tool(tool_name: str) -> bool:
+    parts = tool_name.split("__", 2)
+    return (len(parts) == 3 and parts[0] == "mcp" and bool(parts[1])
+            and parts[2].casefold().replace("-", "_") in _MCP_WRITE_TOOLS)
+
 
 # 当前轮的工作目录(工作目录功能会在开轮时 set_cwd;未设则 None → 越界检查休眠)
 _cwd_var: contextvars.ContextVar = contextvars.ContextVar("vococo_agent_cwd", default=None)
@@ -1030,7 +1032,7 @@ def classify(
             return ("escalate", f"写工作目录外的文件({path})", True)
     # 外部 MCP 的写操作(lemlist-lite 等):会实际发邮件/删改数据,默认请批准
     # ——防止 agent 误调或 prompt injection 借它群发/删数据;cron 等无交互通道直接拒。
-    if tool_name in _MCP_WRITE_TOOLS:
+    if _is_mcp_write_tool(tool_name):
         return ("escalate", f"{tool_name} 是外部写操作(会实际发送/修改数据)", True)
     return ("allow", "", False)
 
@@ -1520,7 +1522,7 @@ def _rule_target(
             return None
         repo = os.path.realpath(repo)
         return ("git_push", repo, f"以后在 {repo} 仓库 git push 不再询问")
-    if tool_name in _MCP_WRITE_TOOLS:
+    if _is_mcp_write_tool(tool_name):
         short = tool_name.split("__")[-1]
         return ("mcp_tool", tool_name, f"以后调用 {short} 不再询问")
     return None

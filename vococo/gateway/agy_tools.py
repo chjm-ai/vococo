@@ -332,27 +332,6 @@ def _result(text: str, *, error: bool = False) -> dict:
     return {"content": [{"type": "text", "text": text}], "isError": error}
 
 
-async def _confirm_external(server_name: str, name: str, detail: str) -> bool:
-    # 外部 MCP 不能因为选了完全访问或伪造只读标记而跳过确认。
-    from .agy_trial import _fence
-    from .core import Choice
-
-    ctx = clarify.current()
-    if ctx is None or not callable(getattr(ctx.adapter, "present_choice", None)):
-        return False
-    prompt = f"Antigravity 请求调用外部工具 {server_name}/{name}：\n\n{_fence(detail)}"
-    pending = clarify.register(ctx.session_key, ["允许一次", "拒绝"], notice={
-        "kind": "approval", "prompt": prompt, "reason": "Antigravity 外部工具", "detail": detail[:2000], "tool": name,
-    })
-    try:
-        await ctx.adapter.present_choice(ctx.chat_id, Choice(prompt=prompt, options=[
-            (f"/clarify {pending.clarify_id} 0", "允许一次"), (f"/clarify {pending.clarify_id} 1", "拒绝"),
-        ]))
-        return await clarify.wait(pending.clarify_id, min(75, config.CLARIFY_TIMEOUT)) == "允许一次"
-    finally:
-        clarify.abandon(pending.clarify_id)
-
-
 async def _invoke(binding: _Binding, name: str, args: dict) -> dict:
     from ..tools import danger
     from .agy_trial import _APPROVAL_SECRET, _AUTH_HEADER
@@ -390,12 +369,11 @@ async def _invoke(binding: _Binding, name: str, args: dict) -> dict:
             {"tool_name": f"mcp__{'vococo' if internal else binding.server_name}__{name}", "tool_input": args}, "", None)
         if guard.get("hookSpecificOutput", {}).get("permissionDecision") == "deny":
             return _result("vococo 安全规则或审批阻止了操作，没有执行。", error=True)
-        if not internal or name in _APPROVE:
+        # 外部服务已由用户挂载，不再叠加桥接层确认；普通通道的安全审批仍由上面的闸门决定。
+        if internal and name in _APPROVE:
             if len(detail) > 6000:
                 return _result("审批参数太长，请拆分后重试。", error=True)
-            confirmed = (await danger.require_approval(f"Antigravity 请求 {name}", detail) if internal
-                         else await _confirm_external(binding.server_name, name, detail))
-            if not confirmed:
+            if not await danger.require_approval(f"Antigravity 请求 {name}", detail):
                 return _result("未批准，本次操作未执行。", error=True)
         if not _active(binding) or (binding.external and not external_is_enabled(binding.session_key, binding.external)):
             return _result("本轮已结束或工具配置发生变化，操作未执行。", error=True)

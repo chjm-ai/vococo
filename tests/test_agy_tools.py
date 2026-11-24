@@ -143,11 +143,13 @@ async def test_native_commands_run_through_existing_guard(monkeypatch, tmp_path)
 
 
 @pytest.mark.anyio
-async def test_external_streamable_http_is_proxied_only_after_confirmation(isolated, monkeypatch):
+async def test_external_streamable_http_calls_without_extra_confirmation_but_keeps_guard(isolated, monkeypatch):
+    from vococo import config
     from vococo.gateway import settings_store
 
     external_calls = []
-    approved = False
+    approvals = []
+    approve = False
     registered = {}
     secret = "synthetic-upstream-value"
     path_secret = "synthetic-path-credential"
@@ -165,20 +167,26 @@ async def test_external_streamable_http_is_proxied_only_after_confirmation(isola
             result = {"protocolVersion": request_body["params"]["protocolVersion"], "capabilities": {"tools": {}},
                       "serverInfo": {"name": "fixture", "version": "1"}}
         elif method == "tools/list":
-            result = {"tools": [{"name": "send_synthetic", "description": "dry operation",
+            result = {"tools": [{"name": tool, "description": "dry operation",
                                  "inputSchema": {"type": "object", "properties": {
-                                     "text": {"type": "string", "pattern": "^remote-only$"}}}}]}
+                                     "text": {"type": "string", "pattern": "^remote-only$"}}}}
+                                for tool in ("high_level_overview", "send_email")]}
         else:
             assert method == "tools/call"
-            external_calls.append(request_body["params"]["arguments"])
+            external_calls.append((request_body["params"]["name"], request_body["params"]["arguments"]))
             result = {"content": [{"type": "text", "text": f"fixture receipt {secret} {path_secret}"}]}
         return web.json_response({"jsonrpc": "2.0", "id": request_body["id"], "result": result})
 
-    async def confirm(server_name, name, detail):
-        assert (server_name, name) == ("external-test", "send_synthetic")
-        return approved
+    async def ask_approval(tool, reason, args, restrict_noninteractive):
+        approvals.append((tool, args["text"]))
+        return approve
 
-    monkeypatch.setattr(agy_tools, "_confirm_external", confirm)
+    def unexpected_popup(*_, **__):
+        pytest.fail("代理不应弹桥接层确认")
+
+    monkeypatch.setattr(config, "APPROVAL_GATE", True)
+    monkeypatch.setattr(danger, "_ask_approval", ask_approval)
+    monkeypatch.setattr(clarify, "register", unexpected_popup)
     monkeypatch.setattr(settings_store, "vococo_enabled", lambda: False)
     monkeypatch.setattr(agents, "runtime_for_session", lambda _: {"mcp": ["external-test"]})
     monkeypatch.setattr(settings_store, "effective_external_mcp", lambda names: {
@@ -203,22 +211,26 @@ async def test_external_streamable_http_is_proxied_only_after_confirmation(isola
                 assert secret not in repr(relay) and path_secret not in repr(relay)
                 headers = {item["name"]: item["value"] for item in relay["headers"]}
 
-                async def call(text):
+                async def call(text, tool="high_level_overview"):
                     response = await client.post(agy_tools.PATH, headers=headers, json={"jsonrpc": "2.0", "id": 1,
-                        "method": "tools/call", "params": {"name": "send_synthetic", "arguments": {"text": text}}})
+                        "method": "tools/call", "params": {"name": tool, "arguments": {"text": text}}})
                     return (await response.json())["result"]
 
-                assert (await call("not approved"))["isError"]
+                assert (await call("blocked by guard", "send_email"))["isError"]
                 assert not external_calls
-                approved = True
-                result = await call("approved synthetic")
+                result = await call("ordinary synthetic")
                 assert not result["isError"] and "fixture receipt" in repr(result)
                 assert secret not in repr(result) and path_secret not in repr(result)
                 assert (await call(secret))["isError"]
+                approve = True
+                assert not (await call("approved synthetic", "send_email"))["isError"]
                 revoke_during_handshake = True
                 assert (await call("revoked during the handshake"))["isError"]
                 assert (await call("after unmount"))["isError"]
-                assert external_calls == [{"text": "approved synthetic"}]
+                assert external_calls == [("high_level_overview", {"text": "ordinary synthetic"}),
+                                          ("send_email", {"text": "approved synthetic"})]
+                assert approvals == [("mcp__external-test__send_email", "blocked by guard"),
+                                     ("mcp__external-test__send_email", "approved synthetic")]
     finally:
         clarify.reset_current(token)
 
@@ -277,14 +289,10 @@ for line in sys.stdin:
     registry = {name: {"type": "stdio", "command": sys.executable, "args": ["-u", "-c", program],
                        "env": {"FIXTURE_PRIVATE": secret}}}
 
-    async def approve(*args):
-        return True
-
     monkeypatch.setattr(agents, "runtime_for_session", lambda _: {"mcp": [name]})
     monkeypatch.setattr(settings_store, "effective_external_mcp", lambda names: {
         name: spec.copy() for name, spec in registry.items() if name in names
     })
-    monkeypatch.setattr(agy_tools, "_confirm_external", approve)
     app = web.Application()
     app.router.add_route("*", agy_tools.PATH, agy_tools.handle)
     key = "session:stdio-probe"

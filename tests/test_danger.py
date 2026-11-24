@@ -145,6 +145,8 @@ def test_unlinked_obsidian_vault_requires_approval(tmp_path, monkeypatch):
 def test_classify_external_mcp_write_escalates():
     """外部 MCP 写操作(发邮件/删数据)必须请批准,读操作不拦。"""
     assert classify("mcp__lemlist_lite__send_email", {"message": "hi"})[0] == "escalate"
+    assert classify("mcp__lemlist-lite__send_email", {})[0] == "escalate"
+    assert classify("mcp__renamed__send-email", {})[0] == "escalate"
     assert classify("mcp__lemlist_lite__add_campaign_lead", {"email": "a@b.c"})[0] == "escalate"
     assert classify("mcp__lemlist_lite__delete_contact", {"idOrEmail": "x"})[0] == "escalate"
     # 读操作与普通工具不受影响
