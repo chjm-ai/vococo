@@ -4,25 +4,55 @@
 // 等待中的选项直接点 = 按时回答;已超时的点了 = 把选择补回原会话让它接着干(gateway/notice_actions.py)。
 // 与内联脚本同属全局作用域(无构建步骤),依赖 app-core / markdown / stream 里的 api、esc、mdToHtml、openConv 等。
 
-const NTC = { items:[], seen:new Set(), loading:false };
+const NTC = { items:[], seen:new Set(), loading:null, refreshPending:false };
 const NTC_ICON = { "允许一次":"✅", "本次会话都允许":"♾️", "本轮任务都允许":"♾️", "永远允许":"📌", "拒绝":"🛑" };
 
 // 铃铛在侧栏底部「筛选」按钮旁(#noticeBtn),有待处理时显示红底数字。手机上侧栏默认收起,
 // 所以同时给 body 挂 has-notices,各视图「打开侧栏」的按钮上出一个小红点(见 styles.css)。
 $("#noticeBtn").innerHTML = ic("bell") + '<span class="ntbadge" hidden></span>';
 
-async function loadNotices(){
-  if(NTC.loading) return;
-  NTC.loading = true;
+function loadNotices(invalidate=false){
+  if(!NTC.loading || invalidate) NTC.refreshPending = true;
+  return NTC.loading ||= refreshNotices();
+}
+
+async function refreshNotices(){
   try{
-    const r = await api("/notices");
-    if(!r.ok) return;
-    NTC.items = (await r.json()).items || [];
-  }catch(e){ return; }
-  finally{ NTC.loading = false; }
+    while(NTC.refreshPending){
+      NTC.refreshPending = false;
+      const knownIds = knownNoticeChoices();
+      let data;
+      try{
+        const r = await api("/notices", {cache:"no-store"});
+        if(!r.ok) continue;
+        data = await r.json();
+      }catch(e){ continue; }
+      // 请求途中来了变更事件，旧快照不再渲染，再拉一遍最新状态。
+      if(NTC.refreshPending) continue;
+      if(Array.isArray(data.waiting_clarify_ids)){
+        const waiting = new Set(data.waiting_clarify_ids);
+        for(const id of knownIds) if(!waiting.has(id) && !_settledChoices.has(id)) settleChoice(id);
+      }
+      NTC.items = data.items || [];
+      renderNotices();
+      autoPopupNewPending();
+    }
+  }finally{ NTC.loading = null; }
+}
+
+function knownNoticeChoices(){
+  // 断线漏过收尾事件时，用服务端快照清掉旧提问，别把下一条消息投给已失效的编号。
+  const modal = $("#choiceModal");
+  return new Set([
+    ...NTC.items.map(it=>it.clarify_id),
+    ...Object.values(S.pendingChoice).map(choiceId),
+    modal && !modal.hidden ? modal.dataset.clarifyId : null,
+  ].filter(Boolean));
+}
+
+function renderNotices(){
   renderNoticeBadge();
   if(!$("#noticePop").hidden) renderNoticePop();
-  autoPopupNewPending();
 }
 
 function renderNoticeBadge(){
@@ -69,7 +99,7 @@ function noticeItemHtml(it){
     <div class="ntmeta">${kind} · ${state} · ${esc(fmtTime(it.ts))}</div>
     ${it.conv?`<a href="#" class="nttitle" data-ntgo="${esc(it.id)}">${esc(it.title||"会话")}</a>`:""}
     <div class="ntprompt">${mdToHtml(it.prompt||"")}</div>
-    <div class="ntopts">${opts}${it.status!=="pending"?`<button class="miniact" data-ntdismiss="${esc(it.id)}">忽略</button>`:""}</div>
+    <div class="ntopts">${opts}${it.status!=="pending" || it.kind==="ask" ? `<button class="miniact" data-ntdismiss="${esc(it.id)}">忽略</button>` : ""}</div>
   </div>`;
 }
 
@@ -88,11 +118,7 @@ function renderNoticePop(){
     pop.hidden=true; openNoticeConversation(it);
   });
   pop.querySelectorAll("[data-ntact]").forEach(b=>b.onclick=()=>actNotice(b.dataset.ntact, b.dataset.label, b));
-  pop.querySelectorAll("[data-ntdismiss]").forEach(b=>b.onclick=async()=>{
-    b.disabled=true;
-    await api("/notices/dismiss",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({id:b.dataset.ntdismiss})}).catch(()=>{});
-    loadNotices();
-  });
+  pop.querySelectorAll("[data-ntdismiss]").forEach(b=>b.onclick=()=>dismissNotice(b.dataset.ntdismiss, b));
   const go=$("#ntPushGo");
   if(go) go.onclick=e=>{ e.preventDefault(); pop.hidden=true; vococoLazy.run("settings", ()=>openSettingsTab("notify")); };
   const all=$("#ntDismissAll");
@@ -100,8 +126,28 @@ function renderNoticePop(){
     const nDec = NTC.items.filter(it=>it.status==="expired" && it.kind==="decision").length;
     if(!confirm("忽略所有已超时的待处理项?"+(nDec?`\n其中 ${nDec} 件待拍板事项也会一起清掉。`:""))) return;
     await api("/notices/dismiss",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({all:true})}).catch(()=>{});
-    loadNotices();
+    loadNotices(true);
   };
+}
+
+async function dismissNotice(id, btn){
+  const buttons = btn.closest(".ntrow").querySelectorAll("button");
+  const item = NTC.items.find(it=>it.id===id);
+  buttons.forEach(b=>b.disabled=true);
+  try{
+    const r = await api("/notices/dismiss",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({id})});
+    if(!r.ok){
+      const d = await r.json().catch(()=>({}));
+      throw new Error(d.error||("HTTP "+r.status));
+    }
+    if(item?.clarify_id) settleChoice(item.clarify_id);
+    NTC.items = NTC.items.filter(it=>it.id!==id);
+    renderNotices();
+  }catch(e){
+    alert("没忽略成:"+(e&&e.message||e));
+    buttons.forEach(b=>b.disabled=false);
+  }
+  await loadNotices(true);
 }
 
 async function actNotice(id, label, btn){
@@ -121,7 +167,7 @@ async function actNotice(id, label, btn){
   }
   if(it && it.conv) delete S.pendingChoice[it.conv];
   if(!d.recovery) $("#noticePop").hidden = true;
-  await loadNotices();
+  loadNotices(true);
   if(d.recovery) return;
   if(d.open){ vococoLazy.run("settings", ()=>openSettingsTab(d.open)); return; }  // 规则清理提醒 → 设置页「安全」
   const conv = d.conv || (it && it.conv);

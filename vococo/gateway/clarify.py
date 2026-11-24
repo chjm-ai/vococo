@@ -51,6 +51,7 @@ class _Pending:
     response: Optional[str] = None
     awaiting_text: bool = False  # 无选项(开放式)或用户点了"其他" → 下一条文字即答案
     notice_id: Optional[str] = None  # 对应的铃铛通知(memory/notices.py);超时后仍可事后处理
+    dismissed: bool = False
 
 
 _pending: dict[str, _Pending] = {}
@@ -224,19 +225,39 @@ def is_waiting(clarify_id: str) -> bool:
     return clarify_id in _pending
 
 
+def waiting_ids() -> list[str]:
+    return list(_pending)
+
+
 def _settle_notice(p: _Pending) -> None:
-    """等待结束:有回答 → answered;超时/被清(response 为 None 或空)→ expired,留在铃铛里。"""
-    if not p.notice_id:
+    """只有待答通知才需要收尾；不能把已经忽略的条目改回超时。"""
+    if not p.notice_id or p.dismissed:
         return
     try:
         from ..memory import notices
 
         if p.response:
-            notices.set_status(p.notice_id, "answered", p.response)
+            notices.set_status(p.notice_id, "answered", p.response, expected="pending")
         else:
-            notices.set_status(p.notice_id, "expired")
+            notices.set_status(p.notice_id, "expired", expected="pending")
     except Exception as exc:  # noqa: BLE001
         print(f"[clarify] 更新通知失败:{exc}", flush=True)
+
+
+def dismiss_ask(clarify_id: str | None, notice_id: str) -> bool:
+    """忽略一条待答提问，不提交答案；已经收到答案时不覆盖。"""
+    from ..memory import notices
+
+    p = _pending.get(clarify_id) if clarify_id else None
+    if p is not None and (p.notice_id != notice_id or p.event.is_set()):
+        return False
+    if not notices.set_status(notice_id, "dismissed", expected="pending"):
+        return False
+    if p is not None:
+        p.dismissed = True
+        _drop(p.clarify_id)
+        p.event.set()
+    return True
 
 
 def abandon(clarify_id: str) -> None:

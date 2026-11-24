@@ -179,8 +179,9 @@ class GatewayRunner:
                 elif tok == "other":
                     from ..memory import chats
 
-                    clarify.mark_awaiting_text(cid)
-                    if adapter.platform != "web" or chats.mode(key) != "chat":
+                    if not clarify.mark_awaiting_text(cid):
+                        await adapter.send(inc.chat_id, await self._late_click(cid, tok))
+                    elif adapter.platform != "web" or chats.mode(key) != "chat":
                         await adapter.send(inc.chat_id, "好,直接打字回答就行。")
                 elif not clarify.resolve_button(cid, tok):
                     await adapter.send(inc.chat_id, await self._late_click(cid, tok))

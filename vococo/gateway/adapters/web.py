@@ -4125,7 +4125,7 @@ class WebAdapter:
                 "title": (agent["name"] if agent else None)
                 or session_store.get_title(n["session_key"]) or (conv or n["session_key"]),
             })
-        return web.json_response({"items": items})
+        return web.json_response({"items": items, "waiting_clarify_ids": clarify.waiting_ids()})
 
     @_authed
     @_json_body
@@ -4151,6 +4151,7 @@ class WebAdapter:
     @_json_body
     async def _handle_notice_dismiss(self, request: web.Request, body: dict) -> web.Response:
         from ...memory import notices
+        from .. import clarify
 
         body = body or {}
         if body.get("all"):
@@ -4159,9 +4160,13 @@ class WebAdapter:
         if n is None or n["status"] not in notices.OPEN_STATUSES:
             return web.json_response({"error": "这条已经处理过了"}, status=404)
         if n["status"] == "pending":
-            return web.json_response({"error": "还在等你回答,选一个选项即可"}, status=400)
-        if not notices.set_status(n["id"], "dismissed", expected=n["status"]):
-            return web.json_response({"error": "审批状态已变化，请刷新"}, status=409)
+            if n["kind"] != "ask":
+                return web.json_response({"error": "还在等你回答,选一个选项即可"}, status=400)
+            changed = clarify.dismiss_ask(n["clarify_id"], n["id"])
+        else:
+            changed = notices.set_status(n["id"], "dismissed", expected=n["status"])
+        if not changed:
+            return web.json_response({"error": "通知状态已变化，请刷新"}, status=409)
         return web.json_response({"ok": True})
 
     @_authed

@@ -1,6 +1,7 @@
 """铃铛:待处理的提问/审批(memory/notices.py + gateway/notice_actions.py + 相关接口)。"""
 from __future__ import annotations
 
+import asyncio
 import datetime
 
 import anyio
@@ -154,6 +155,27 @@ def test_late_click_on_old_button(resumed):
     _ = nid
 
 
+def test_other_button_after_dismiss_does_not_prompt_for_text(isolated):
+    from vococo.gateway.run import GatewayRunner, Incoming
+
+    class Adapter:
+        platform = "web"
+
+        async def send(self, chat_id, text):
+            messages.append(text)
+
+    async def scenario():
+        inc = Incoming(platform="web", chat_id="dismissed-ask", text="")
+        p = clarify.register(inc.session_key, ["是"], notice={"kind": "ask", "prompt": "问?"})
+        assert clarify.dismiss_ask(p.clarify_id, p.notice_id)
+        inc.text = f"/clarify {p.clarify_id} other"
+        assert await GatewayRunner([])._try_clarify(Adapter(), inc)
+
+    messages = []
+    anyio.run(scenario)
+    assert messages == ["(这个选择已经处理过了)"]
+
+
 def test_conv_of():
     assert notice_actions.conv_of(config.SESSION_KEY) == "main"
     assert notice_actions.conv_of("web:p1:c2") == "p1:c2"
@@ -222,6 +244,96 @@ async def test_notice_routes(ntc_app, resumed):
         items = (await (await client.get("/notices")).json())["items"]
     assert items == []
     assert resumed and resumed[0][0] == "web:p1:c1"
+
+
+@pytest.mark.anyio
+async def test_dismiss_live_question_releases_tool_without_answer(ntc_app, resumed):
+    from vococo.tools import builtin
+
+    shown = asyncio.Event()
+
+    class Adapter:
+        platform = "web"
+
+        async def present_choice(self, chat_id, choice):
+            shown.set()
+
+    token = clarify.set_current("web:p1:c1", Adapter(), "p1:c1")
+    try:
+        async with TestClient(TestServer(ntc_app)) as client, anyio.create_task_group() as tg:
+            result = asyncio.get_running_loop().create_future()
+
+            async def ask():
+                result.set_result(await builtin.ask_user.handler({"question": "发公开链接？", "options": ["发", "不发"]}))
+
+            tg.start_soon(ask)
+            with anyio.fail_after(2):
+                await shown.wait()
+                data = await (await client.get("/notices")).json()
+                [item] = data["items"]
+                assert item["status"] == "pending"
+                assert item["clarify_id"] in data["waiting_clarify_ids"]
+                assert (await client.post("/notices/dismiss", json={"id": item["id"]})).status == 200
+                text = (await result)["content"][0]["text"]
+            notice = notices.get(item["id"])
+            assert notice["status"] == "dismissed" and notice["answer"] is None
+            assert not clarify.is_waiting(item["clarify_id"])
+            assert "已忽略" in text and "不代表同意" in text
+            data = await (await client.get("/notices")).json()
+            assert data["items"] == [] and item["clarify_id"] not in data["waiting_clarify_ids"]
+            assert (await client.post("/notices/act", json={"id": item["id"], "label": "发"})).status == 400
+            assert resumed == []
+    finally:
+        clarify.reset_current(token)
+
+
+@pytest.mark.anyio
+async def test_dismiss_keeps_live_approval_and_answer_already_submitted(ntc_app):
+    approval = clarify.register("web:x", ["允许一次", "拒绝"], notice={"kind": "approval", "prompt": "批?"})
+    question = clarify.register("web:y", ["是"], notice={"kind": "ask", "prompt": "问?"})
+    try:
+        async with TestClient(TestServer(ntc_app)) as client:
+            assert (await client.post("/notices/dismiss", json={"all": True})).status == 200
+            assert notices.get(question.notice_id)["status"] == "pending"
+            assert (await client.post("/notices/dismiss", json={"id": approval.notice_id})).status == 400
+            assert not approval.event.is_set()
+            assert clarify.resolve(question.clarify_id, "是")
+            assert (await client.post("/notices/dismiss", json={"id": question.notice_id})).status == 409
+            assert await clarify.wait(question.clarify_id, 1) == "是"
+            assert notices.get(question.notice_id)["status"] == "answered"
+    finally:
+        clarify.abandon(approval.clarify_id)
+        if clarify.is_waiting(question.clarify_id):
+            clarify.abandon(question.clarify_id)
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("will_send", [True, False])
+async def test_dismiss_cannot_override_late_answer_in_flight(ntc_app, monkeypatch, will_send):
+    nid = _expired_ask()
+    started, finish = asyncio.Event(), asyncio.Event()
+
+    async def resume(key, text):
+        started.set()
+        await finish.wait()
+        if not will_send:
+            raise RuntimeError("原会话暂不可用")
+        return "已补答"
+
+    monkeypatch.setattr(notice_actions, "resume", resume)
+    async with TestClient(TestServer(ntc_app)) as client:
+        answering = asyncio.create_task(client.post("/notices/act", json={"id": nid, "label": "A"}))
+        try:
+            with anyio.fail_after(2):
+                await started.wait()
+                assert (await client.post("/notices/dismiss", json={"id": nid})).status == 404
+                assert (await (await client.post("/notices/dismiss", json={"all": True})).json())["count"] == 0
+        finally:
+            finish.set()
+            r = await answering
+        assert r.status == (200 if will_send else 400)
+        notice = notices.get(nid)
+        assert (notice["status"], notice["answer"]) == (("answered", "A") if will_send else ("expired", None))
 
 
 @pytest.mark.anyio

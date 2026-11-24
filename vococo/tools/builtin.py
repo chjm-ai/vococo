@@ -1223,10 +1223,13 @@ async def ask_user(args: dict) -> dict:
         else:
             await ctx.adapter.send(ctx.chat_id, f"❓ {question}\n(直接回复即可)")
     except Exception as e:
-        clarify.abandon(p.clarify_id)
-        return _ok(f"(提问没能发出去:{e};请直接在正文里问。)")
+        if not p.dismissed:
+            clarify.abandon(p.clarify_id)
+            return _ok(f"(提问没能发出去:{e};请直接在正文里问。)")
 
     answer = await clarify.wait(p.clarify_id, config.CLARIFY_TIMEOUT)
+    if p.dismissed:
+        return _ok("(用户已忽略这条提问，未选择任何选项。忽略不代表同意；请跳过需要此答复的操作。)")
     if not answer:
         return _ok(
             "(用户未在时限内回答;问题已留在铃铛里,他之后补答会作为新消息发回本会话。"

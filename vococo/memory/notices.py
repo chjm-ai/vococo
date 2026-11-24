@@ -7,6 +7,7 @@
   expired   超时 / 本轮结束 / 进程重启 / 后台任务夜间免打扰 —— 【仍然可以处理】:
             点选项 = 把你的选择补回原会话让它接着干(见 gateway/notice_actions.act)
   answered  已回答(按时点了,或事后补答)
+  replying  正在发回补答，不再接受忽略或重复补答
   approved_unrun 已补批，但许可未被使用；verify_required 执行结果不明，须先核对
   replaying 正在尝试恢复或重跑；dismissed 你点了忽略
 
@@ -172,7 +173,7 @@ def expire_all_pending() -> int:
     """进程重启:之前在等的选项已经没人接了,统一改成 expired(仍可事后处理)。"""
     c = _conn()
     cur = c.execute(
-        "UPDATE notices SET status='expired', updated_at=? WHERE status='pending'", (time.time(),)
+        "UPDATE notices SET status='expired', updated_at=? WHERE status IN ('pending','replying')", (time.time(),)
     )
     c.execute("UPDATE notices SET status='verify_required', updated_at=? WHERE status='replaying'", (time.time(),))
     c.commit()

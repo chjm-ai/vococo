@@ -135,6 +135,22 @@ def _act_task_approval(n: dict, task: dict, access: dict, label: str, conv: str 
     return _start_retry(n, task, retry, label, conv)
 
 
+async def _reply_late_ask(n: dict, label: str, conv: str | None) -> dict:
+    # 补答可能要等原轮收尾，先锁定本条，避免另一端同时忽略却仍发出了答案。
+    if not notices.set_status(n["id"], "replying", expected=n["status"]):
+        return {"ok": False, "error": "通知状态已变化，请刷新"}
+    sent = False
+    try:
+        text = f"(补答)你之前问:「{n['prompt']}」\n我的回答:{label}\n请接着之前的工作继续。"
+        message = await resume(n["session_key"], text)
+        sent = True
+        return {"ok": True, "message": message, "conv": conv}
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "error": f"没能发回原会话:{exc}"}
+    finally:
+        notices.set_status(n["id"], "answered" if sent else "expired", label if sent else None, expected="replying")
+
+
 async def act(notice_id: str, label: str) -> dict:
     """处理一条通知。返回 {"ok": bool, "message"|"error": str, "conv": str|None}。"""
     from . import clarify
@@ -196,7 +212,7 @@ async def act(notice_id: str, label: str) -> dict:
             "请按这个执行;要改 GOAL.md / PLAN.md 的照改,做完简短汇报。"
         )
     else:
-        text = f"(补答)你之前问:「{n['prompt']}」\n我的回答:{label}\n请接着之前的工作继续。"
+        return await _reply_late_ask(n, label, conv)
 
     try:
         msg = await resume(n["session_key"], text)

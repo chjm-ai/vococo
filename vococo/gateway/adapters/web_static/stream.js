@@ -551,7 +551,7 @@ function connect(){
     // 恰是最容易出现"流式气泡卡死"的时候(断线期间 done 被环形缓冲挤掉),顺带核对一次。
     reloadHistory(true);
     taskTree.schedule();
-    if(typeof loadNotices==="function") loadNotices();  // 铃铛:补上断线期间的待处理项
+    if(typeof loadNotices==="function") loadNotices(true);  // 重连要核对最新状态，不能复用断线前的请求
     if(!firstOpen) checkShellVersion();
   };
   es.onmessage = ev=>{ try{
@@ -820,7 +820,7 @@ function handleEvent(e){
   }
   if(e.type==="notices"){
     if(e.clarify_id && ["answered","dismissed","expired"].includes(e.status)) settleChoice(e.clarify_id);
-    if(typeof loadNotices==="function") loadNotices();
+    if(typeof loadNotices==="function") loadNotices(true);
     return;
   }
   if(e.type==="choice" && _settledChoices.has(choiceId(e))) return;
