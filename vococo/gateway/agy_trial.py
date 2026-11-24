@@ -1060,7 +1060,7 @@ async def stream_native(key: str, turn_id: int, model: str, prompt: str, refusal
                           "以工具实际清单及审批回执为准。修改 Git 仓库前使用 prepare_repository 取得会话副本，"
                           "只在它返回的副本路径修改。" if builtin_server else "")
             if external:
-                tools_note += "\n已随当前 Agent 挂载无凭据的本机 MCP：" + "、".join(item["name"] for item in external)
+                tools_note += "\n已随当前 Agent 通过 vococo 代调 MCP：" + "、".join(item["name"] for item in external)
             turn_prompt = f"{_ACP_NOTE}{tools_note}{style_note}{handoff_note}{attachment_note}\n\n用户消息：\n{prompt}"
             attachment_options = {"image_blocks": image_blocks} if image_blocks else {}
 
