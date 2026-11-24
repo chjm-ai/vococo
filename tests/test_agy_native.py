@@ -208,11 +208,15 @@ async def test_cross_engine_switch_is_reversible_and_handoff_is_opt_in(isolated,
     async def acp_turn(cwd, timeout, model, prompt, *, session_id=None, **kwargs):
         acp.append((prompt, session_id, kwargs.get("image_blocks")))
         yield "session", session_id or str(uuid.uuid4())
+        if "第一次 AGY" in prompt:
+            yield "context_usage", (0, 1_048_576)
+            yield "context_usage", (10_718, 1_048_576)
         yield "delta", "AGY_RESULT"
 
     async def normal_turn(history, prompt, *, resume, model, **kwargs):
         sdk.append((model, history, resume))
-        yield Done(AgentReply("NORMAL_RESULT", [], "new-sdk", False))
+        yield Done(AgentReply("NORMAL_RESULT", [], None, False, context_tokens=4200,
+                              turn_tokens=80, context_window=200_000, model=model))
 
     async def cwd(key):
         return str(isolated)
@@ -244,9 +248,11 @@ async def test_cross_engine_switch_is_reversible_and_handoff_is_opt_in(isolated,
     monkeypatch.setattr(web_bridge, "session_busy", runner.session_busy)
     app = web.Application()
     app.add_routes([web.post("/model", adapter._handle_model_switch), web.post("/send", adapter._handle_send),
-                    web.post("/turn/regenerate", adapter._handle_turn_regenerate)])
+                    web.post("/turn/regenerate", adapter._handle_turn_regenerate),
+                    web.get("/history", adapter._handle_history), web.get("/models", adapter._handle_models)])
     # 先走普通通道，然后模拟另外两轮含附件和合成凭据的历史。
     session_store.set_chosen_model(conv, "claude-sonnet-5")
+    session_store.record_usage(conv, 4000, 100, window=200_000, model="claude-sonnet-5")
     session_store.append(conv, "SYNTHETIC SONNET\n\nhttps://example.com/library-only", "SONNET_CONTEXT")
     failed = session_store.start_turn(conv, "FAILED_QUERY")
     session_store.finish_turn(failed, "FAILED_RESULT", session_key=conv, failed=True)
@@ -265,9 +271,23 @@ async def test_cross_engine_switch_is_reversible_and_handoff_is_opt_in(isolated,
             return await client.post("/send", json={"conv": conv, "agent_id": "general", "text": text,
                                                     "agy_trial_model": marker, **params})
 
+        async def last_history():
+            response = await client.get("/history", params={"conv": conv})
+            return (await response.json())["turns"][-1]
+
+        def last_done():
+            events = [json.loads(data) for _, data in adapter._buffer]
+            return next(event for event in reversed(events) if event["type"] == "done")
+
         required = await choose(HIGH)
         assert required.status == 409 and (await required.json())["code"] == "handoff_required"
-        assert (await choose(HIGH, handoff="recent", previous_model="claude-sonnet-5")).status == 200
+        switched = await choose(HIGH, handoff="recent", previous_model="claude-sonnet-5")
+        assert switched.status == 200
+        switched_meta = await switched.json()
+        assert (switched_meta["ctx_tokens"], switched_meta["ctx_window"], switched_meta["total_tokens"]) == (0, 0, 100)
+        assert "/compact" in switched_meta["blocked_commands"]
+        models = await (await client.get("/models", params={"conv": conv})).json()
+        assert models["blocked_commands"] == switched_meta["blocked_commands"]
         stale = await send("纯文字但无标记")
         assert stale.status == 409 and (await stale.json())["code"] == "model_mismatch"
         attachment = await send("附带引用", HIGH, library_refs=["dummy"])
@@ -281,6 +301,10 @@ async def test_cross_engine_switch_is_reversible_and_handoff_is_opt_in(isolated,
         await runner._handle(adapter, await anext(adapter.receive()))
         first_agy = session_store.agy_native_session(conv)
         assert first_agy and "SONNET_CONTEXT" in acp[0][0]
+        for usage in (last_done(), session_store.session_summary(conv)):
+            assert (usage["ctx_tokens"], usage["ctx_window"], usage["total_tokens"]) == (10_718, 1_048_576, 100)
+        assert last_done()["can_regenerate"] is False
+        assert (await last_history())["can_regenerate"] is False
         assert acp[0][2] == [{"type": "image", "mimeType": "image/png", "data": image_data}]
         assert session_store.load_history(conv)[-1]["images"]
         assert not any(marker in acp[0][0] for marker in (
@@ -289,7 +313,11 @@ async def test_cross_engine_switch_is_reversible_and_handoff_is_opt_in(isolated,
         assert (await choose("gpt-6.2-sol", handoff="recent", previous_model=LOW)).status == 409
         ack = await choose("gpt-6.2-sol", handoff="recent")
         assert ack.status == 200
-        first_gpt_segment = (await ack.json())["engine_segment"]
+        ack_meta = await ack.json()
+        first_gpt_segment = ack_meta["engine_segment"]
+        assert ack_meta["ctx_tokens"] == ack_meta["ctx_window"] == 0
+        assert ack_meta["blocked_commands"] == []
+        assert (await last_history())["can_regenerate"] is False
         crossed = await client.post("/turn/regenerate", json={"conv": conv, "id": session_store.engine_context(conv)["cutoff"]})
         assert crossed.status == 409
         assert session_store.agy_native_session(conv) == first_agy
@@ -297,11 +325,14 @@ async def test_cross_engine_switch_is_reversible_and_handoff_is_opt_in(isolated,
         assert (await send("现在 GPT")).status == 200
         await runner._handle(adapter, await anext(adapter.receive()))
         assert sdk[-1][0] == "gpt-6.2-sol" and sdk[-1][2] is None
+        assert last_done()["ctx_tokens"] == 4200 and last_done()["can_regenerate"] is True
+        assert (await last_history())["can_regenerate"] is True
         assert not any(turn.assistant == "AGY_RESULT" for turn in sdk[-1][1]), "跨模型不自动交接附件轮"
         assert (await choose(LOW, handoff="fresh")).status == 200
         assert (await send("从新开始 AGY", LOW)).status == 200
         await runner._handle(adapter, await anext(adapter.receive()))
         assert acp[-1][1] is None and "NORMAL_RESULT" not in acp[-1][0]
+        assert last_done()["ctx_tokens"] == last_done()["ctx_window"] == 0
         assert session_store.agy_native_session(conv)["id"] != first_agy["id"]
         assert (await choose("gpt-6.2-sol", handoff="recent")).status == 200
         old_tab = await send("旧标签页稿件", expected_model="gpt-6.2-sol", engine_segment=first_gpt_segment)

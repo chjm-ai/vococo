@@ -405,7 +405,7 @@ async function regenerateTurn(conv, turnId, btn, auto){
 function maybeAutoResume(conv, turns){
   if(!turns || !turns.length || !conv || S.autoResumed[conv]) return;
   const last=turns[turns.length-1];
-  if(!last || last.pending || !(last.events||[]).some(x=>x.type==="interrupted")) return;
+  if(!last || last.pending || last.can_regenerate===false || !(last.events||[]).some(x=>x.type==="interrupted")) return;
   S.autoResumed[conv]=true;
   setTimeout(()=>regenerateTurn(conv, last.id, null, true), 300);  // 让气泡先渲染出来再恢复
 }
@@ -723,7 +723,7 @@ function discardStream(){
   stream.row.remove(); S.stream=null;
   updateSendBtn(); updateEmpty();
 }
-function finalizeStream(finalText, imgs, turnId, vids, htmls, artifacts){
+function finalizeStream(finalText, imgs, turnId, vids, htmls, artifacts, canRegenerate){
   if(!S.stream) return;
   if(S.stream.checklistItems) upsertChecklist(S.stream,S.stream.checklistItems,false);
   // 末尾那条普通命令以前等不到下一段正文/命令,会永久散落在过程区;收工时也要归组。
@@ -754,7 +754,7 @@ function finalizeStream(finalText, imgs, turnId, vids, htmls, artifacts){
   // turnId 只有 done 事件(常规对话轮)才带,命令回复/cron 推送(message 事件)没有,
   // 此时不挂重新生成按钮(见 buildTurnFoot)。ts 用本地时间近似,跟服务端落库时刻
   // 只差一次网络往返,消息级"几点几分"的粒度感知不出来。
-  S.stream.bubble.append(buildTurnFoot(S.conv, turnId, streamText(S.stream), Date.now()/1000, true));
+  S.stream.bubble.append(buildTurnFoot(S.conv, turnId, streamText(S.stream), Date.now()/1000, canRegenerate!==false));
   // 补上 data-tid:这颗气泡是原地转正的,renderTurns 靠 tid 去重——不补的话,回合结束后
   // 只要该会话不切换直接又触发一次 renderTurns(如切后台再切回来 reviveSSE→reloadHistory),
   // 就会认不出这是同一轮,把它当"新的一轮"再建一个节点,同一段回复看着重复了两遍。
@@ -982,7 +982,7 @@ function handleEvent(e){
         appendArtifacts(errBubble,e.artifacts);
       }else{
         if(!S.stream && (e.html_previews?.length || e.artifacts?.length)) ensureStream();
-        finalizeStream(e.text, undefined, e.turn_id, undefined, e.html_previews, e.artifacts);
+        finalizeStream(e.text, undefined, e.turn_id, undefined, e.html_previews, e.artifacts, e.can_regenerate);
       }
       if(e.is_error){
         if(errBubble) errBubble.classList.add("err");

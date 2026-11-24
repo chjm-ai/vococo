@@ -162,6 +162,19 @@ def test_record_usage_zero_ctx_tokens_keeps_previous_value(isolated):
     assert summary["last_cache"] == 2_000  # 其它明细仍照常刷新
 
 
+def test_context_snapshot_distinguishes_known_zero_from_missing_telemetry(isolated):
+    from vococo.memory import session_store
+
+    key, model = "web:agy-context", "agy-native:gemini-4-neon"
+    session_store.append(key, "你好", "你好")
+    session_store.set_chosen_model(key, model, handoff="fresh")
+    segment = session_store.engine_context(key)["segment"]
+    for used, window in ((10_718, 1_048_576), (0, 1_048_576), (280, 1_048_576), (0, 0)):
+        session_store.update_context(key, used, window, model)
+        for summary in (session_store.session_summary(key), session_store.list_sessions(key)[0]):
+            assert (summary["ctx_tokens"], summary["ctx_window"], summary["engine_segment"]) == (used, window, segment)
+
+
 def test_observed_cli_context_limits_are_used_in_session_views(isolated):
     from vococo.memory import session_store
 

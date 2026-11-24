@@ -293,7 +293,7 @@ function isChildTask(item){ return item?.relation==="child"; }
 // 用一份 /conversations 响应数据重建 S.convs(供 loadConvs() 与登录时的首次拉取共用,
 // 登录那次不用再多打一次 /conversations)。
 var _convsFetchedAt = 0, _convsSoonTimer = null, _convsRequestId = 0;
-function applyConvs(d){
+function applyConvs(d, refreshUsage=false){
   _convsFetchedAt = Date.now();
   const main = d.main; main.conv="main"; main.title="历史聊天"; main.pinned=true;
   // 草稿和当前聊天不在任务列表响应中，保留详情元数据，避免刷新丢失 Agent 归属。
@@ -311,7 +311,7 @@ function applyConvs(d){
   S.homeConvsVersion++;
   S.homeConvs = S.convFilter==="all" ? S.convs : null;
   renderConvs();   // 会话刷新后同步标题栏
-  refillCurrentMeta();
+  refillCurrentMeta(refreshUsage);
   if($("#empty").style.display==="flex") renderEmptyRecent();
 }
 async function loadConvs(){
@@ -320,9 +320,11 @@ async function loadConvs(){
   // 不加参数,保持全量。
   const qs = (S.convFilter==="active"||S.convFilter==="archived") ? ("?filter="+S.convFilter) : "";
   const requestId = ++_convsRequestId;
+  const conv=S.conv, meta=S.meta;
   const r = await api("/conversations"+qs); const d = await r.json();
   if(requestId !== _convsRequestId) return;
-  applyConvs(d);
+  // 请求发出后收到的实时快照更优先，不用侧栏旧回执覆盖。
+  applyConvs(d, conv===S.conv && meta===S.meta);
   idbSet("convs", d);
   prefetchHistories();
 }

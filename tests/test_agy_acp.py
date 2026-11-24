@@ -47,6 +47,28 @@ def update(text):
 
 
 @pytest.mark.anyio
+async def test_context_usage_only_accepts_valid_updates_from_active_prompt():
+    def usage(sid, used, size):
+        return {'method': 'session/update', 'params': {'sessionId': sid, 'update': {
+            'sessionUpdate': 'usage_update', 'used': used, 'size': size,
+        }}}
+
+    proc = Proc([
+        usage('s', 8, 1000), {'id': 1, 'result': {'sessionId': 's'}},
+        usage('s', 0, 1000), usage('elsewhere', 500, 1000),
+        usage('s', True, 1000), usage('s', 9, 0), usage('s', 2**64, 1000),
+        update('OK'), usage('s', 12, 1000),
+        {'id': 2, 'result': {'stopReason': 'end_turn', 'usage': {'totalTokens': 999}}},
+    ])
+    client = agy_acp._Client(proc, set())
+    assert await collect(client.request('session/load', {'sessionId': 's'}, replay=True)) == [
+        ('result', {'sessionId': 's'}),
+    ]
+    events = await collect(client.request('session/prompt', {'sessionId': 's'}))
+    assert events[:-1] == [('context_usage', (0, 1000)), ('delta', 'OK'), ('context_usage', (12, 1000))]
+
+
+@pytest.mark.anyio
 async def test_permission_allows_only_exact_context_tools():
     proc = Proc([
         {'jsonrpc': '2.0', 'id': 1, 'result': {}},
