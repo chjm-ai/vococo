@@ -698,6 +698,7 @@ const COMPOSER_PROMPTS=[
 ];
 const COMPOSER_PROMPT_CATEGORY_KEY="vococo_composer_prompt_category";
 let composerPromptCategory=COMPOSER_PROMPTS[0].id;
+let composerPromptView=null, composerPromptCache=null, composerPromptWrite=Promise.resolve();
 try{
   const stored=localStorage.getItem(COMPOSER_PROMPT_CATEGORY_KEY);
   if(COMPOSER_PROMPTS.some(category=>category.id===stored)) composerPromptCategory=stored;
@@ -706,8 +707,16 @@ try{
 function closeComposerPrompts(restoreFocus=false){
   const dialog=$("#composerPrompts");
   if(!dialog?.open) return;
+  composerPromptView=null;
   dialog.close();
   if(restoreFocus) $("#composerOpenPrompts").focus({preventScroll:true});
+}
+function composerPromptEditorOpen(){
+  return $("#composerPrompts")?.open && !$("#composerPromptEditor").hidden;
+}
+function resetComposerPrompts(){
+  closeComposerPrompts();
+  composerPromptCache=null;
 }
 function insertComposerPrompt(body){
   const ta=$("#ta");
@@ -721,45 +730,227 @@ function insertComposerPrompt(body){
   ta.focus({preventScroll:true});
   ta.setSelectionRange(position,position+(placeholder?.[0].length||0));
 }
-function selectComposerPromptCategory(category){
-  composerPromptCategory=category.id;
-  try{ localStorage.setItem(COMPOSER_PROMPT_CATEGORY_KEY,category.id); }catch(e){}
+function currentComposerPromptCategory(){
+  return COMPOSER_PROMPTS.find(category=>category.id===composerPromptCategory);
+}
+function composerPromptPrefKey(category){ return "composer_prompts_"+category.id; }
+function readComposerPromptItems(category, prefs){
+  const raw=prefs[composerPromptPrefKey(category)];
+  if(raw===undefined) return category.items;
+  try{
+    const items=JSON.parse(raw);
+    if(Array.isArray(items) && items.every(item=>Array.isArray(item) && item.length===2 &&
+      item.every(text=>typeof text==="string" && text.trim()))) return items;
+  }catch(e){}
+  return null;
+}
+async function requestComposerPromptPrefs(options={}){
+  return api("/prefs",{signal:AbortSignal.timeout?.(10000),...options});
+}
+function composerPromptStatus(message="", isError=false){
+  const status=$("#composerPromptStatus");
+  status.textContent=message;
+  status.toggleAttribute("data-error",isError);
+}
+function composerPromptAction(icon, label, action){
+  const button=el("button","composer-prompt-action composer-prompt-"+icon);
+  button.type="button"; button.title=label; button.setAttribute("aria-label",label);
+  setIcon(button,icon);
+  button.onclick=action;
+  return button;
+}
+function composerPromptRow([name,body], index, canEdit){
+  const row=el("div","composer-prompt-entry"), use=el("button","composer-prompt-row");
+  const title=el("strong"), hint=el("small");
+  use.type="button"; use.title=body; title.textContent=name; hint.textContent=body;
+  use.append(title,hint);
+  use.onclick=()=>insertComposerPrompt(body);
+  row.append(use);
+  if(canEdit){
+    const edit=composerPromptAction("edit","编辑「"+name+"」",()=>editComposerPrompt(index));
+    const remove=composerPromptAction("trash","删除「"+name+"」",()=>deleteComposerPrompt(index));
+    row.append(edit,remove);
+  }
+  return row;
+}
+function renderComposerPromptCategory(){
+  const view=composerPromptView, category=currentComposerPromptCategory();
+  const items=view.prefs && readComposerPromptItems(category,view.prefs);
+  const cached=composerPromptCache && readComposerPromptItems(category,composerPromptCache);
+  const rows=items ?? cached ?? category.items;
   $("#composerPromptCategories").querySelectorAll("button").forEach(button=>{
     button.setAttribute("aria-pressed",String(button.dataset.category===category.id));
   });
-  $("#composerPromptRows").replaceChildren(...category.items.map(([name,body])=>{
-    const row=el("button","composer-prompt-row"), title=el("strong"), hint=el("small");
-    row.type="button"; row.title=body; title.textContent=name; hint.textContent=body;
-    row.append(title,hint);
-    row.onclick=()=>insertComposerPrompt(body);
-    return row;
-  }));
+  $("#composerPromptAdd").disabled=!items;
+  const empty=el("div","composer-prompt-empty"); empty.textContent="这个分类还没有提示词";
+  $("#composerPromptRows").replaceChildren(...(rows.length ? rows.map((item,index)=>composerPromptRow(item,index,!!items)) : [empty]));
+  const fallback=cached ? "上次读取的提示词" : "内置提示词";
+  const status=view.loading ? "正在同步，暂时显示"+fallback+"。" :
+    items ? "" : "同步失败，当前仅可使用"+fallback+"。关闭面板后重试同步。";
+  composerPromptStatus(status,!view.loading && !items);
 }
-function openComposerPrompts(){
+function showComposerPromptEditor(isEditing){
+  $("#composerPromptCategories").hidden=isEditing;
+  $("#composerPromptRows").hidden=isEditing;
+  $("#composerPromptAdd").hidden=isEditing;
+  $("#composerPromptEditor").hidden=!isEditing;
+  $("#composerPromptsClose").setAttribute("aria-label",isEditing ? "返回提示词列表" : "关闭提示词");
+  $("#composerPromptsTitle").textContent=isEditing ?
+    (composerPromptView.editIndex<0 ? "新增提示词" : "编辑提示词")+" · "+currentComposerPromptCategory().label : "提示词";
+}
+function editComposerPrompt(index){
+  const view=composerPromptView, items=readComposerPromptItems(currentComposerPromptCategory(),view.prefs);
+  if(view.saving || !items) return;
+  view.editIndex=index; view.validationError=false;
+  const [name,body]=items[index] || ["",""];
+  $("#composerPromptName").value=name;
+  $("#composerPromptBody").value=body;
+  composerPromptStatus();
+  showComposerPromptEditor(true);
+  $("#composerPrompts").scrollTop=0;
+  $("#composerPromptName").focus();
+}
+function focusComposerPrompt(index){
+  const edit=$("#composerPromptRows").querySelectorAll(".composer-prompt-edit")[index];
+  (edit || $("#composerPromptAdd:enabled") || $("#composerPromptsClose")).focus();
+}
+function cancelComposerPromptEdit(){
+  const view=composerPromptView;
+  if(view.saving) return;
+  showComposerPromptEditor(false);
+  renderComposerPromptCategory();
+  focusComposerPrompt(view.editIndex);
+}
+async function persistComposerPromptItems(key, expected, value){
+  const response=await requestComposerPromptPrefs({method:"PATCH",headers:{"Content-Type":"application/json"},
+    body:JSON.stringify({key,expected:expected ?? null,value})});
+  if(response.status===409) return response.json();
+  if(!response.ok) throw new Error("prefs");
+  return null;
+}
+function resolveComposerPromptConflict(category, latest){
+  const view=composerPromptView, key=composerPromptPrefKey(category);
+  const previous=readComposerPromptItems(category,view.prefs)[view.editIndex];
+  if(latest===null) delete view.prefs[key];
+  else view.prefs[key]=latest;
+  const items=readComposerPromptItems(category,view.prefs);
+  renderComposerPromptCategory();
+  if(!composerPromptEditorOpen()){
+    focusComposerPrompt(-1);
+    composerPromptStatus("其他页面已更新此分类。列表已刷新，请重新选择。",true);
+    return;
+  }
+  if(!items){ composerPromptStatus("无法读取新版列表，暂时无法保存。",true); return; }
+  const matches=previous ? items.flatMap(([name,body],index)=>name===previous[0] && body===previous[1] ? [index] : []) : [];
+  view.editIndex=matches.length===1 ? matches[0] : -1;
+  showComposerPromptEditor(true);
+  composerPromptStatus(previous && view.editIndex<0 ? "原提示词已更改或删除。再次保存会新增一条。" :
+    "其他页面已更新此分类。编辑内容已保留，请核对后再保存。",true);
+}
+function setComposerPromptSaving(view, saving){
+  view.saving=saving;
+  $("#composerPromptSave").disabled=saving;
+  $("#composerPromptName").readOnly=$("#composerPromptBody").readOnly=saving;
+}
+async function saveComposerPromptItems(category, items, focusIndex){
+  const view=composerPromptView, key=composerPromptPrefKey(category), encoded=JSON.stringify(items);
+  setComposerPromptSaving(view,true);
+  composerPromptStatus("正在保存…");
+  try{
+    composerPromptWrite=persistComposerPromptItems(key,view.prefs[key],encoded);
+    const conflict=await composerPromptWrite;
+    if(view!==composerPromptView) return;
+    if(conflict && conflict.current!==encoded){ resolveComposerPromptConflict(category,conflict.current); return; }
+    view.prefs[key]=encoded;
+    showComposerPromptEditor(false);
+    renderComposerPromptCategory();
+    focusComposerPrompt(focusIndex);
+  }catch(e){
+    if(view===composerPromptView) composerPromptStatus("保存未确认，请检查网络后重试。",true);
+  }finally{
+    setComposerPromptSaving(view,false);
+  }
+}
+function submitComposerPrompt(e){
+  e.preventDefault();
+  const view=composerPromptView;
+  if(!view || view.saving || $("#composerPromptEditor").hidden) return;
+  const name=$("#composerPromptName").value.trim(), body=$("#composerPromptBody").value;
+  if(!name || !body.trim()){
+    view.validationError=true;
+    composerPromptStatus("名称和正文都不能为空。",true);
+    $(name ? "#composerPromptBody" : "#composerPromptName").focus();
+    return;
+  }
+  const category=currentComposerPromptCategory(), current=readComposerPromptItems(category,view.prefs);
+  if(!current){ composerPromptStatus("无法读取新版列表，暂时无法保存。",true); return; }
+  const items=[...current], index=view.editIndex<0 ? items.length : view.editIndex;
+  items[index]=[name,body];
+  void saveComposerPromptItems(category,items,index);
+}
+function deleteComposerPrompt(index){
+  const view=composerPromptView;
+  if(view.saving) return;
+  const category=currentComposerPromptCategory(), items=[...readComposerPromptItems(category,view.prefs)];
+  if(!confirm("删除提示词「"+items[index][0]+"」？")) return;
+  items.splice(index,1);
+  void saveComposerPromptItems(category,items,Math.min(index,items.length-1));
+}
+async function openComposerPrompts(){
   const dialog=$("#composerPrompts");
-  if(dialog.open){ closeComposerPrompts(true); return; }
+  if(dialog.open){ dismissComposerPromptPanel(); return; }
   closeComposerPopovers();
-  selectComposerPromptCategory(COMPOSER_PROMPTS.find(category=>category.id===composerPromptCategory));
+  const view=composerPromptView={loading:true,prefs:null,saving:false};
+  showComposerPromptEditor(false);
+  renderComposerPromptCategory();
   if(IS_MOBILE_DEVICE) dialog.showModal(); else dialog.show();
+  dialog.scrollTop=0;
   $("#composerPromptsClose").focus({preventScroll:true});
+  await composerPromptWrite.catch(()=>{});
+  if(view!==composerPromptView) return;
+  try{
+    const response=await requestComposerPromptPrefs({cache:"no-store"});
+    if(response.ok) view.prefs=await response.json();
+  }catch(e){}
+  if(view!==composerPromptView) return;
+  if(view.prefs) composerPromptCache=view.prefs;
+  view.loading=false;
+  renderComposerPromptCategory();
+}
+function dismissComposerPromptPanel(){
+  if(composerPromptEditorOpen()) cancelComposerPromptEdit();
+  else closeComposerPrompts(true);
 }
 function initComposerPrompts(){
-  const trigger=$("#composerOpenPrompts"), dialog=$("#composerPrompts");
+  const trigger=$("#composerOpenPrompts"), dialog=$("#composerPrompts"), add=$("#composerPromptAdd");
   setIcon(trigger,"doc");
   setIcon($("#composerPromptsClose"),"close");
   for(const category of COMPOSER_PROMPTS){
     const button=el("button"); button.type="button";
     button.textContent=category.label; button.dataset.category=category.id;
-    button.onclick=()=>selectComposerPromptCategory(category);
+    button.onclick=()=>{
+      if(composerPromptView.saving) return;
+      composerPromptCategory=category.id;
+      try{ localStorage.setItem(COMPOSER_PROMPT_CATEGORY_KEY,category.id); }catch(e){}
+      renderComposerPromptCategory();
+    };
     $("#composerPromptCategories").append(button);
   }
   $("#imgBtn").onclick=()=>{ closeComposerPopovers(); $("#file").click(); };
   trigger.onclick=openComposerPrompts;
-  $("#composerPromptsClose").onclick=()=>closeComposerPrompts(true);
-  dialog.oncancel=e=>{ e.preventDefault(); closeComposerPrompts(true); };
-  dialog.onclick=e=>{ if(e.target===dialog && IS_MOBILE_DEVICE) closeComposerPrompts(true); };
+  add.onclick=()=>editComposerPrompt(-1);
+  $("#composerPromptForm").onsubmit=submitComposerPrompt;
+  $("#composerPromptEditor").oninput=()=>{
+    if(!composerPromptView?.validationError) return;
+    composerPromptView.validationError=false;
+    composerPromptStatus();
+  };
+  $("#composerPromptCancel").onclick=cancelComposerPromptEdit;
+  $("#composerPromptsClose").onclick=dismissComposerPromptPanel;
+  dialog.oncancel=e=>{ e.preventDefault(); dismissComposerPromptPanel(); };
+  dialog.onclick=e=>{ if(e.target===dialog && IS_MOBILE_DEVICE && !composerPromptEditorOpen()) closeComposerPrompts(true); };
   document.addEventListener("click",e=>{
-    if(!IS_MOBILE_DEVICE && !e.target.closest("#composerPrompts,#composerOpenPrompts")) closeComposerPrompts();
+    if(!IS_MOBILE_DEVICE && !composerPromptEditorOpen() && !e.target.closest("#composerPrompts,#composerOpenPrompts")) closeComposerPrompts();
   });
 }
 initComposerPrompts();

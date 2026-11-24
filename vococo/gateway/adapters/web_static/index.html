@@ -401,10 +401,25 @@ try{
               <div class="composer-prompts-inner">
                 <header class="composer-prompts-head">
                   <strong id="composerPromptsTitle">提示词</strong>
-                  <button type="button" id="composerPromptsClose" aria-label="关闭提示词"></button>
+                  <div class="composer-prompt-actions">
+                    <button type="button" id="composerPromptAdd" disabled>＋ 新增</button>
+                    <button type="button" id="composerPromptsClose" aria-label="关闭提示词"></button>
+                  </div>
                 </header>
+                <div id="composerPromptStatus" role="status"></div>
                 <div id="composerPromptCategories" role="group" aria-label="提示词分类"></div>
                 <div id="composerPromptRows" role="group" aria-label="提示词列表"></div>
+                <div id="composerPromptEditor" hidden>
+                  <!-- 编辑器位于聊天表单内，显式关联独立表单，回车保存不会发送聊天。 -->
+                  <label for="composerPromptName">名称</label>
+                  <input id="composerPromptName" type="text" form="composerPromptForm" required maxlength="120">
+                  <label for="composerPromptBody">正文</label>
+                  <textarea id="composerPromptBody" form="composerPromptForm" rows="5" required maxlength="20000"></textarea>
+                  <div class="composer-prompt-actions">
+                    <button type="button" id="composerPromptCancel">取消</button>
+                    <button type="submit" id="composerPromptSave" form="composerPromptForm">保存</button>
+                  </div>
+                </div>
               </div>
             </dialog>
             <div class="inbar">
@@ -445,6 +460,7 @@ try{
       </div>
       <input type="file" id="file" multiple hidden>
     </form>
+    <form id="composerPromptForm" hidden></form>
   </main>
   <!-- 核心工作台 Demo：数据与交互均在前端内存，不触达现有任务/文档同步链路。 -->
   <!-- 铃铛弹层(notices.js):铃铛在侧栏底部筛选按钮旁,弹层固定贴左下角、盖在侧栏之上 -->
@@ -2418,12 +2434,14 @@ function fitViewport(){
   if(kbOpen){
     st.setProperty("--app-h", vv.height + "px");
     st.setProperty("--app-top", vv.offsetTop + "px");
+    st.setProperty("--keyboard-bottom", Math.max(0, window.innerHeight - vv.height - vv.offsetTop) + "px");
     scrollDown(true);
   }else{
     // 键盘收起时交还布局视口(100%):iOS 独立 PWA 下 visualViewport 高度
     // 常偏小且不再触发 resize,固定绑定会在底部留一条空白
     st.removeProperty("--app-h");
     st.removeProperty("--app-top");
+    st.removeProperty("--keyboard-bottom");
     // 视口回正后输入框会重新布局:重测其高度让 messages 底部让位量跟上,
     // 并把最后一条消息重新滚进可视区,避免收起后内容被输入框盖住。
     // iOS 独立 PWA 收起后布局晚一拍才稳定,再延迟兜底一次。

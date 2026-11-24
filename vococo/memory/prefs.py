@@ -26,3 +26,19 @@ def set_prefs(updates: dict) -> None:
                 (str(k), str(v)),
             )
     c.commit()
+
+
+def compare_and_set_pref(key: str, expected: str | None, value: str) -> bool:
+    """仅在旧值仍匹配时保存；None 表示该键尚未写入。"""
+    with _db.conn() as c:
+        if expected is None:
+            cursor = c.execute(
+                "INSERT INTO user_prefs(key, value) VALUES(?,?) ON CONFLICT(key) DO NOTHING",
+                (key, value),
+            )
+        else:
+            cursor = c.execute(
+                "UPDATE user_prefs SET value=? WHERE key=? AND value=?",
+                (value, key, expected),
+            )
+        return cursor.rowcount == 1

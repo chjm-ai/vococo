@@ -3262,6 +3262,20 @@ class WebAdapter:
         return web.json_response({"ok": True})
 
     @_authed
+    @_json_body
+    async def _handle_pref_update(self, request: web.Request, body: dict) -> web.Response:
+        """PATCH /prefs  只在旧值仍匹配时写入单个偏好。"""
+        if not isinstance(body, dict) or set(body) != {"key", "expected", "value"}:
+            return web.json_response({"error": "无效的偏好更新"}, status=400)
+        key, expected, value = body["key"], body["expected"], body["value"]
+        if (not isinstance(key, str) or not key.strip() or not isinstance(value, str)
+                or (expected is not None and not isinstance(expected, str))):
+            return web.json_response({"error": "无效的偏好更新"}, status=400)
+        if not session_store.compare_and_set_pref(key, expected, value):
+            return web.json_response({"current": session_store.get_prefs().get(key)}, status=409)
+        return web.json_response({"ok": True})
+
+    @_authed
     async def _handle_settings(self, request: web.Request) -> web.Response:
         """设置页初始快照:技能清单 + MCP(内置 vococo + 外部)+ 记忆/AGENTS 文件列表。"""
         # active = 当前实际在用的模型,算法跟 _handle_models 的 default 保持一致
@@ -4346,6 +4360,7 @@ class WebAdapter:
                 # 用户偏好
                 web.get("/prefs", self._handle_prefs_get),
                 web.post("/prefs", self._handle_prefs_set),
+                web.patch("/prefs", self._handle_pref_update),
                 # 设置页
                 web.get("/settings", self._handle_settings),
                 web.post("/settings/skill", self._handle_settings_skill),

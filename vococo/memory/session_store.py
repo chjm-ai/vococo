@@ -41,7 +41,7 @@ from .images import (  # noqa: F401 (re-export)
     save_turn_images,
     thumb_path,
 )
-from .prefs import get_prefs, set_prefs  # noqa: F401 (re-export)
+from .prefs import compare_and_set_pref, get_prefs, set_prefs  # noqa: F401 (re-export)
 from .projects import (  # noqa: F401 (re-export)
     hide_project,
     list_projects,

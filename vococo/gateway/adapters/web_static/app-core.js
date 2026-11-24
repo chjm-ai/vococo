@@ -136,12 +136,12 @@ function closeComposerPopovers(except){
     const pop=$("#"+id);
     if(pop && pop!==except) pop.hidden=true;
   }
-  closeComposerPrompts();
+  if(typeof composerPromptEditorOpen==="function" && !composerPromptEditorOpen()) closeComposerPrompts();
   if(except!==$("#modelPop")) hideUsageTip();
   if(except!==$("#cmdPop")) closeCmdMenu();
 }
 document.addEventListener("keydown", e=>{
-  if(e.key==="Escape") closeComposerPopovers();
+  if(e.key==="Escape" && !e.isComposing && e.keyCode!==229) closeComposerPopovers();
 });
 
 // ── 线框图标(替代实体 emoji,统一 currentColor 描边风格)──────────────────
@@ -339,6 +339,7 @@ function setServiceState(state){
 
 // ── 登录 ────────────────────────────────────────────────────────────────
 function showLogin(){
+  if(typeof resetComposerPrompts==="function") resetComposerPrompts();
   $("#login").style.display="flex"; $("#app").hidden=true;
   const bs=$("#bootSkip"); if(bs) bs.remove();  // 摘掉早期"跳过闪烁"那段强制样式,否则 #app 会被 !important 钉在显示状态
   if(S.es){S.es.close();S.es=null;}
