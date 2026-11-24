@@ -3,13 +3,21 @@
 // 与内联脚本同属全局作用域(无构建步骤),加载顺序见 index.html。
 
 // ── Markdown 渲染(内置,不依赖 CDN)────────────────────────────────────────
-// 文档预览:识别"看起来是文档"的链接/本地路径,点击不跳新标签页,而是右侧分屏预览
-// (见 openDocPreview)。http(s) 链接后缀命中或落在 /pub/ 发布目录下才算文档;
-// 本地路径(无协议头,以 / . ~ 开头)只要后缀命中就算,不要求存在——服务端会校验。
+// 只预览本地文件和本站文档。外站文章常以 .html 结尾，不能仅凭后缀拦截。
 const DOC_EXT_RE = /\.(md|markdown|txt|html?|pdf|xlsx?|docx|csv|tsv|json|log|ya?ml|py|jsx?|tsx?|sh|css|xml)(\?[^\s)]*)?$/i;
-function isDocUrl(url){
-  if(/^https?:\/\//i.test(url)) return DOC_EXT_RE.test(url) || /\/pub\//.test(url);
-  return DOC_EXT_RE.test(url);
+function httpUrl(target){
+  if(!/^https?:\/\//i.test(target)) return null;
+  try{ return new URL(target); }catch(e){ return null; }
+}
+function isDocUrl(target){
+  const url=httpUrl(target);
+  return url?.origin===location.origin && (DOC_EXT_RE.test(url.pathname) || url.pathname.startsWith("/pub/"));
+}
+function chatUrlLinkHtml(txt, target, asCode=false){
+  const url=target.startsWith("/pub/") ? location.origin+target : target;
+  if(isDocUrl(url)) return docLinkHtml(txt,url);
+  const link='<a href="'+url+'" target="_blank" rel="noopener">'+txt+'</a>';
+  return asCode ? "<code>"+link+"</code>" : link;
 }
 function isLocalDocPath(target){
   if(target.includes("\\\\") || target.startsWith("//")) return false;
@@ -47,21 +55,23 @@ function inlineMd(t){
   const hold = html => { parts.push(html); return "\u0000"+(parts.length-1)+"\u0000"; };
   t = t.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g,(m,txt,url)=>{
     let html;
-    if(/^https?:\/\//i.test(url)) html = isDocUrl(url) ? docLinkHtml(txt,url) : '<a href="'+url+'" target="_blank" rel="noopener">'+txt+'</a>';
+    if(/^https?:\/\//i.test(url) || url.startsWith("/pub/")) html = chatUrlLinkHtml(txt,url);
     else if(DOC_EXT_RE.test(url)) html = docLinkHtml(txt,url);   // 本地路径 + 文档后缀 → 预览
     else html = txt;   // 本地路径但不是文档、也不是外链 → 没法点,退化成纯文字,别留死链接
     return hold(html);
   });
   t = t.replace(/`([^`]+)`/g,(m,c)=>{
-    // 反引号里的内容本身就是个文档链接/路径 → 直接当文档链接处理,不再展示成灰底代码块
-    if(/^https?:\/\//i.test(c)) return hold(isDocUrl(c) ? docLinkHtml(c,c) : "<code>"+c+"</code>");
+    if(httpUrl(c) || c.startsWith("/pub/")) return hold(chatUrlLinkHtml(c,c,true));
     if(DOC_EXT_RE.test(c) && c.includes("/")) return hold(docLinkHtml(c,c));
     return hold("<code>"+c+"</code>");
   });
   t = t.replace(/(^|[\s(])(file:\/\/\/[^\s<>()`"'&]+\.html?)/gi,(m,pre,p)=>pre+hold(docLinkHtml(p,p)));
   t = t.replace(/\*\*([^*]+)\*\*/g,"<strong>$1</strong>");
   t = t.replace(/\*([^*\n]+)\*/g,"<em>$1</em>");
-  t = t.replace(/(https?:\/\/[^\s<]+[^\s<.,)])/g,(m,url)=>isDocUrl(url)?docLinkHtml(url,url):'<a href="'+url+'" target="_blank" rel="noopener">'+url+'</a>');
+  t = t.replace(/https?:\/\/(?:(?!&(?:lt|gt|quot|#39);)[^\s<])+/gi,m=>{
+    const url=m.replace(/[.,)，。！？；、]+$/,"");
+    return httpUrl(url) ? hold(chatUrlLinkHtml(url,url))+m.slice(url.length) : m;
+  });
   // 裸本地路径:除了 /Users/xx/report.md 这种绝对路径,更常见的是 AI 直接写相对路径,
   // 比如 "00-inbox/2026-07-30_xxx.md"(没有 ./ 前缀)。分两支:①有 / ~/ ./ ../ 显式前缀的,
   // 后面随便接什么字符(文件名本身常带中文,比如用户这个案例);②没有显式前缀的裸相对路径,
@@ -208,8 +218,10 @@ async function openDocPreview({kind, target, title, highlight=""}){
   };
   const body = $("#dpBody");
   body.innerHTML = '<div class="dp-loading">'+DOTS+'</div>';
-  $("#dpOpenBtn").hidden = kind!=="url";
-  if(kind==="url") $("#dpOpenBtn").onclick = ()=>window.open(target, "_blank", "noopener");
+  const url=kind==="url" ? httpUrl(target) : null;
+  $("#dpOpenBtn").hidden = !url;
+  $("#dpOpenBtn").onclick = url ? ()=>window.open(url.href, "_blank", "noopener") : null;
+  $("#dpWinBtn").hidden = kind==="url" && url?.origin!==location.origin;
   // 独立窗口:走真实页面 /doc-preview.html,不是当前对话内的分屏——token 不经 URL(那是
   // 明确的安全红线,见 web_auth.py),独立窗口靠同源共享的 localStorage 自己取 token。
   $("#dpWinBtn").onclick = ()=>{
@@ -243,8 +255,7 @@ async function openDocPreview({kind, target, title, highlight=""}){
     body.innerHTML = '<div class="dp-err">加载失败,检查一下网络</div>';
   }
 }
-// 外部 URL 的 iframe 是真实跨域内容(不像本地文件那样先读成 blob 隔离),给个宽松沙箱——
-// 挡"跳出 iframe 劫持整个页面"(不给 allow-top-navigation),别的照常放行,不影响正常浏览。
+// 本站发布页用真实 URL 加载相对资源；不允许 iframe 直接导航顶层页面。
 const DP_URL_SANDBOX = 'sandbox="allow-scripts allow-same-origin allow-popups allow-forms"';
 function highlightPreviewText(body, text){
   const phrase = (text||"").trim();
@@ -266,31 +277,22 @@ function highlightPreviewText(body, text){
 }
 
 function renderDocUrl(target, highlight=""){
-  const body=$("#dpBody"), ext=extOf(target);
-  const sameOrigin = target.startsWith(location.origin+"/");
+  const body=$("#dpBody"), url=httpUrl(target);
+  if(url?.origin!==location.origin){
+    body.innerHTML = '<div class="dp-err">'+(url ? '外部链接不支持站内预览，请点右上角「在新标签页打开」。' : '预览地址无效。')+'</div>';
+    return;
+  }
+  const ext=extOf(url.pathname);
   if(ext==="md"||ext==="markdown"||ext==="txt"){
-    // 跨域 fetch 会被本站 CSP 的 connect-src 'self' 直接挡在浏览器这一层(压根发不出网络
-    // 请求),不是"对方不让读"——干等 fetch 失败再退化没意义,直接走"尝试内嵌+给出说明"。
-    if(!sameOrigin){ dpExternalFallback(target, "跨域文档:浏览器安全策略不允许本站直接读取外部内容,下面尝试直接显示原页面。"); return; }
-    fetch(target).then(r=>r.text()).then(txt=>{
+    fetch(url.href).then(r=>r.text()).then(txt=>{
       if(ext==="txt"){ body.innerHTML=""; const pre=el("pre","dp-text"); pre.textContent=txt; body.append(pre); }
       else body.innerHTML='<div class="dp-md bubble">'+mdToHtml(txt)+'</div>';
       highlightPreviewText(body, highlight);
-    }).catch(()=>{ dpExternalFallback(target, "读取失败,下面尝试直接显示原页面。"); });
+    }).catch(()=>{ body.innerHTML='<div class="dp-err">读取失败，请点右上角「在新标签页打开」。</div>'; });
     return;
   }
-  if(/^(png|jpe?g|gif|webp|svg)$/.test(ext)){ body.innerHTML='<img class="dp-img" src="'+esc(target)+'">'; return; }
-  if(!sameOrigin){ dpExternalFallback(target, "这是外部链接,能不能内嵌预览取决于对方网站自己的安全策略(比如 GitHub 就明确禁止被其他网站嵌入)。"); return; }
-  body.innerHTML='<iframe class="dp-frame" '+DP_URL_SANDBOX+' src="'+esc(target)+'"></iframe>';
-}
-// 跨域内容常常连"能不能被嵌进 iframe"都由对方说了算(X-Frame-Options/CSP frame-ancestors),
-// 浏览器不给 JS 任何"被拒绝"的可探测信号——没法判断失败后自动切换,只能提前把话说清楚,
-// 同时仍然尝试 iframe(万一对方允许,直接就能看)。
-function dpExternalFallback(target, note){
-  const body=$("#dpBody");
-  body.innerHTML =
-    '<div class="dp-err">'+esc(note)+' 如果下面还是空白,点右上角"在新标签页打开"直接看原页面。</div>'+
-    '<iframe class="dp-frame" '+DP_URL_SANDBOX+' src="'+esc(target)+'"></iframe>';
+  if(/^(png|jpe?g|gif|webp|svg)$/.test(ext)){ body.innerHTML='<img class="dp-img" src="'+esc(url.href)+'">'; return; }
+  body.innerHTML='<iframe class="dp-frame" '+DP_URL_SANDBOX+' src="'+esc(url.href)+'"></iframe>';
 }
 function prepareOfficeDownload(endpoint,filename){
   const button=$("#dpDlBtn"); button.hidden=false;
