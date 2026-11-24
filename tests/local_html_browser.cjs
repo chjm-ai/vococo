@@ -104,12 +104,27 @@ const path=require('node:path');
       await page.locator(selector).getByText(text).waitFor();
       await page.evaluate(()=>closeDocPreview());
     }
-    await render('https://example.com/page.html');
-    assert.equal(await page.locator('#local-link-test .doclink').getAttribute('href'),'https://example.com/page.html');
-    await page.evaluate(()=>{window.renderDocUrl=target=>{window.externalDocTarget=target;};});
-    await page.locator('#local-link-test .doclink').click();
-    assert.equal(await page.evaluate(()=>window.externalDocTarget),'https://example.com/page.html');
-    await page.evaluate(()=>closeDocPreview());
+    await page.context().route('https://example.com/**',route=>route.fulfill({status:200,body:'外部原网页'}));
+    const external='https://example.com/page.html';
+    await render(external);
+    const externalLink=page.locator('#local-link-test a');
+    assert.equal(await externalLink.getAttribute('href'),external);
+    assert.equal(await externalLink.getAttribute('target'),'_blank');
+    const [popup]=await Promise.all([page.waitForEvent('popup'),externalLink.click()]);
+    await popup.waitForURL(external);
+    assert.equal(await page.locator('#docPreview').isVisible(),false);
+    await popup.close();
+    const outsideDocs='https://example.com/pub/report.pdf?from=rss&lang=zh';
+    const spaced='https://example.com/Quarterly Report.pdf';
+    await page.evaluate(({url,spaced})=>renderPreviewMarkdown($('#local-link-test'),url+'。 <'+url+'> `'+spaced+'`'),{url:outsideDocs,spaced});
+    assert.deepEqual(await externalLink.evaluateAll(links=>links.map(a=>[a.href,a.target,a.classList.contains('doclink')])),
+      [outsideDocs,outsideDocs,new URL(spaced).href].map(url=>[url,'_blank',false]));
+    for(const published of ['/pub/preview-regression/',origin+'/pub/preview-regression/']){
+      await render(published);
+      await page.locator('#local-link-test .doclink').click();
+      await page.frameLocator('#dpBody iframe').getByRole('heading',{name:'本站发布页'}).waitFor();
+      await page.evaluate(()=>closeDocPreview());
+    }
     for(const target of ['file://remote/page.html','//remote/page.html','javascript:page.html']){
       await render(target);assert.equal(await page.locator('#local-link-test .doclink').count(),0);
     }

@@ -26,6 +26,10 @@ async def test_local_html_links_browser(isolated, monkeypatch):
     (root / "large.html").write_bytes(b"x" * 200001)
     (root / "bad.html").write_bytes(b"\xff")
     (root / "notes.md").write_text("# 普通文档")
+    monkeypatch.setattr(config, "PUBLISHED_DIR", isolated / "published")
+    published = config.PUBLISHED_DIR / "preview-regression"
+    published.mkdir(parents=True)
+    (published / "index.html").write_text("<h1>本站发布页</h1>", encoding="utf-8")
     (root / "会议纪要 空格.md").write_text("# 会议纪要正文")
     (root / "signed.txt").write_text("署名逐字稿正文")
     (isolated / "outside.html").write_text("<p>目录外</p>")

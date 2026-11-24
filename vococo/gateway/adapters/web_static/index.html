@@ -1584,7 +1584,9 @@ function renderConvDocuments(documents){
   pop.querySelectorAll(".cdrow").forEach(btn=>{ btn.onclick=()=>{
     const d=documents[+btn.dataset.i]; if(!d) return;
     pop.hidden=true;
-    openDocPreview({kind:/^https?:\/\//i.test(d.path)?"url":"path", target:d.path, title:d.name||d.path});
+    const url=httpUrl(d.path);
+    if(url && url.origin!==location.origin){ window.open(url.href,"_blank","noopener"); return; }
+    openDocPreview({kind:url?"url":"path", target:d.path, title:d.name||d.path});
   }; });
 }
 async function toggleConvDocuments(){
