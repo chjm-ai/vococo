@@ -2001,7 +2001,7 @@ async def switch_model(args: dict) -> dict:
 @tool(
     "search_library", "搜索作品库，不扫描文件目录。返回作品元信息；需要原件时使用 get_library_item。",
     {"type": "object", "properties": {
-        "kind": {"type": "string", "enum": ["", "image", "website"]},
+        "kind": {"type": "string", "enum": ["image", "website"], "description": "不传则搜索全部类型"},
         "agent_id": {"type": "string"}, "state": {"type": "string", "enum": ["visible", "hidden", "all"]},
         "search": {"type": "string"}, "limit": {"type": "integer"}, "offset": {"type": "integer"}}},
 )

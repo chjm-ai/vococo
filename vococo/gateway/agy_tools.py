@@ -353,6 +353,9 @@ async def _invoke(binding: _Binding, name: str, args: dict) -> dict:
     internal = binding.server_name == NAME
     tool = binding.tools[name]
     if internal:
+        if name == "search_library" and args.get("kind") == "":
+            # 旧会话可能仍按旧声明传空字符串，按省略类型兼容。
+            args = {key: value for key, value in args.items() if key != "kind"}
         schema = {**tool.input_schema, "additionalProperties": False}
         if not Draft202012Validator(schema, registry=Registry()).is_valid(args):
             return _result("参数不符合工具定义。", error=True)

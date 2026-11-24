@@ -68,6 +68,32 @@ async def test_builtin_mcp_is_turn_scoped_and_preserves_approval(isolated, monke
         clarify.reset_current(ctx_token)
 
 
+@pytest.mark.anyio
+async def test_library_search_declares_only_nonempty_kinds_and_allows_omission(isolated, monkeypatch):
+    monkeypatch.setattr(agents, "runtime_for_session", lambda _: {})
+    app = web.Application()
+    app.router.add_route("*", agy_tools.PATH, agy_tools.handle)
+    key = "session:synthetic"
+    ctx_token = clarify.set_current(key, SimpleNamespace(platform="web"), key, 7)
+    try:
+        async with TestClient(TestServer(app)) as client:
+            async with agy_tools.mount(key, 7, str(isolated)) as server:
+                headers = {item["name"]: item["value"] for item in server["headers"]}
+                request = {"jsonrpc": "2.0", "id": 1, "method": "tools/list"}
+                listing = await (await client.post(agy_tools.PATH, headers=headers, json=request)).json()
+                search = next(tool for tool in listing["result"]["tools"] if tool["name"] == "search_library")
+                assert search["inputSchema"]["properties"]["kind"]["enum"] == ["image", "website"]
+                for arguments in ({}, {"kind": ""}, {"kind": "image"}):
+                    request.update(method="tools/call", params={"name": "search_library", "arguments": arguments})
+                    result = await (await client.post(agy_tools.PATH, headers=headers, json=request)).json()
+                    assert result["result"]["content"][0]["text"] == "[]"
+                request["params"]["arguments"] = {"kind": "unknown"}
+                result = await (await client.post(agy_tools.PATH, headers=headers, json=request)).json()
+                assert result["result"]["isError"]
+    finally:
+        clarify.reset_current(ctx_token)
+
+
 def test_external_mcp_accepts_future_registered_transports_but_not_unselected_or_plain_remote(monkeypatch):
     from vococo.gateway import settings_store
 
