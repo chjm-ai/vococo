@@ -28,7 +28,7 @@ MODELS = tuple(key.split(":", 1)[1] for key in CHOICES)
 MAX_PROMPT = 8000
 NATIVE_TURN_TIMEOUT = 360
 NATIVE_MAX_TIMEOUT = 720
-NATIVE_PROGRESS_WINDOW = 90
+NATIVE_PROGRESS_WINDOW = 180
 DEFAULT_MODEL = MODELS[1]
 CLASH = "http://127.0.0.1:7890"
 MAX_OUTPUT = 1024 * 1024
@@ -333,6 +333,8 @@ _ACP_NOTE = (
     "派发、续接、取消任务会先请主人在网页确认，被拒绝就如实说明。"
     "Skill 每轮可能更新：本轮要遵循任何 Skill 时，必须重新调用 read_skill 取最新正文，"
     "不要沿用历史对话里的技能内容。"
+    "长任务先回报已完成的部分。如果同一工具连续失败，停止盲试，说明阻碍并保留可用结果。"
+    "续做中断任务时先核对已执行的操作，不要重复写入。"
 )
 _EFFORT_ORDER = ("low", "medium", "high", "xhigh")
 _EFFORT_LABEL = {"low": "Low", "medium": "Medium", "high": "High", "xhigh": "XHigh"}
@@ -959,7 +961,9 @@ async def stream_native(key: str, turn_id: int, model: str, prompt: str, refusal
     from . import agy_acp, agy_handoff, agy_tools, settings_store
 
     chunks = []
-    has_tool_results = False
+    has_tool_results = has_tool_started = False
+    has_successful_tool = False
+    session_id = None
     if not refusal and (not prompt.strip() or len(prompt) > MAX_PROMPT):
         refusal = f"Antigravity 的消息正文需为 1–{MAX_PROMPT} 字。"
     if not refusal and native_pending(key):
@@ -997,7 +1001,6 @@ async def stream_native(key: str, turn_id: int, model: str, prompt: str, refusal
             else:
                 prepared = await asyncio.to_thread(agy_handoff.prepare, key)
                 cwd, meta = prepared["workspace"], prepared
-            session_id = None
             recovered = False
             bundle = await _vococo_mcp_bundle() if settings_store.vococo_enabled() else None
             denied = set(agents.runtime_for_session(key).get("disallowed_tools") or ())
@@ -1032,6 +1035,7 @@ async def stream_native(key: str, turn_id: int, model: str, prompt: str, refusal
             async def approve(name, call):
                 nonlocal denied_note
                 if isinstance(name, str) and name in denied_native:
+                    denied_tools.add(name)
                     return "deny"
                 if isinstance(name, str) and name in _NATIVE_GATED:
                     decision = await _approve_native_tool(name, call, cwd, key)
@@ -1041,12 +1045,14 @@ async def stream_native(key: str, turn_id: int, model: str, prompt: str, refusal
                     return decision
                 short = bundle["write"].get(name) if bundle else None
                 if short in brain_blocked or (isinstance(name, str) and any(name.endswith("_" + tool) for tool in brain_blocked)):
+                    denied_tools.add(short or name)
                     return "deny"
                 if short is None:
                     # 名字里带 vococo 写工具却没被映射上时（上游改了命名），
                     # 必须 fail-closed，避免把派单/续接/取消误放行。
                     if isinstance(name, str) and any(
                             tool in name.lower() for tool in VOCOCO_MCP_WRITE):
+                        denied_tools.add(name)
                         return "deny"
                     return "allow"
                 if short in denied_tools:
@@ -1081,8 +1087,14 @@ async def stream_native(key: str, turn_id: int, model: str, prompt: str, refusal
 
             context_usage = (0, 0)
 
+            def save_native():
+                native = {"id": session_id, "cwd": cwd, "agent_id": meta["agent_id"], "acp": True}
+                if segment:
+                    native["segment"] = segment
+                return session_store.save_agy_native_session(key, entry_id, turn_id, native, previous=saved_bound)
+
             async def consume_once(sid):
-                nonlocal session_id, has_tool_results, context_usage
+                nonlocal session_id, has_tool_results, has_tool_started, has_successful_tool, context_usage
                 context_usage = (0, 0)
                 async with aclosing(agy_acp.stream_turn(
                         cwd, NATIVE_TURN_TIMEOUT, base, turn_prompt, effort=effort, session_id=sid,
@@ -1101,6 +1113,7 @@ async def stream_native(key: str, turn_id: int, model: str, prompt: str, refusal
                             display = _AGY_TOOL_NAMES.get(raw_name, raw_name)
                             tid = payload.get("id") or ""
                             if payload.get("phase") == "start":
+                                has_tool_started = True
                                 yield ToolStarted(display, tid)
                                 yield ToolInput(display, tid,
                                                 _agy_tool_input(raw_name, payload.get("input") or {}))
@@ -1109,6 +1122,7 @@ async def stream_native(key: str, turn_id: int, model: str, prompt: str, refusal
                                 ok, preview, detail = _agy_tool_result(
                                     raw_name, payload.get("status") or "",
                                     payload.get("output") or "", payload.get("exit_code"))
+                                has_successful_tool |= ok
                                 yield ToolFinished(display, ok, preview, tid, detail)
                         elif event == "session":
                             session_id = payload
@@ -1123,7 +1137,7 @@ async def stream_native(key: str, turn_id: int, model: str, prompt: str, refusal
                             yield delta
                         return
                     except agy_acp.AcpError as exc:
-                        if (exc.code not in ("agy_model_unavailable", "agy_effort_unavailable")
+                        if (session_id is not None or exc.code not in ("agy_model_unavailable", "agy_effort_unavailable")
                                 or attempt == 2):
                             raise
                         await asyncio.sleep(0.3)
@@ -1134,12 +1148,11 @@ async def stream_native(key: str, turn_id: int, model: str, prompt: str, refusal
             except agy_acp.AcpError as exc:
                 # 升级前创建的纯文本会话理论上可用 ACP 载入；万一载入失败，
                 # 只对这种旧会话降级为新会话，避免整条会话锁死无法继续。
-                if not (bound and not bound.get("acp") and exc.code == "agy_session_mismatch"):
+                if not (bound and not bound.get("acp") and session_id is None and exc.code == "agy_session_mismatch"):
                     raise
                 recovered = True
                 async for delta in consume(None):
                     yield delta
-                chunks.append("\n\n（原 Antigravity 会话无法恢复，已新建会话继续。）")
             # 真实 agy 在用户拒绝写工具后可能直接 end_turn 且不产出正文；
             # 这不是模型故障，给一条明确回执，并视为本轮没有成功执行。
             denied_only = not "".join(chunks).strip() and bool(denied_tools)
@@ -1147,28 +1160,31 @@ async def stream_native(key: str, turn_id: int, model: str, prompt: str, refusal
                 chunks.append(denied_note or "已拒绝 Antigravity 的写操作，本轮未执行。")
             if not "".join(chunks).strip():
                 raise UpstreamError("agy_no_result")
-            lock = {"id": session_id, "cwd": cwd, "agent_id": meta["agent_id"], "acp": True}
-            if segment:
-                lock["segment"] = segment
-            if denied_only and not bound:
-                pass  # 首轮只发生被拒写操作，不覆盖之前的原生会话
-            elif not _valid_native_id(session_id):
-                raise UpstreamError("agy_native_lock_failed")
-            elif saved_bound and (recovered or not bound):
-                if not session_store.replace_agy_native_session(key, entry_id, lock):
-                    raise UpstreamError("agy_native_lock_failed")
-            elif not bound and not session_store.lock_agy_native_session(key, entry_id, turn_id, lock):
+            if denied_only and (not bound or recovered):
+                pass  # 只发生被拒写操作，不覆盖之前的原生会话
+            elif not _valid_native_id(session_id) or ((not bound or recovered) and not save_native()):
                 raise UpstreamError("agy_native_lock_failed")
             if not denied_only:
+                if recovered:
+                    chunks.append("\n\n（原 Antigravity 会话无法恢复，已新建会话继续。）")
                 # 只保存成功轮次的最后快照；没上报则清除已不再准确的上轮占用。
                 yield ContextUsage(*context_usage, entry_id)
         except (ValueError, OSError, UpstreamError, agy_acp.AcpError) as exc:
             code = exc.code if isinstance(exc, (UpstreamError, agy_acp.AcpError)) else type(exc).__name__
             log.warning("Antigravity 网页轮次失败: turn_id=%s code=%s", turn_id, code)
-            if code == "agy_timeout":
-                refusal = "Antigravity 本轮达到执行时限。"
-                if has_tool_results or any(chunk.strip() for chunk in chunks):
-                    refusal += "本轮已返回的内容和工具结果已保留，请查看进度后分步继续。"
+            if code in ("agy_timeout", "agy_idle_timeout"):
+                has_text = any(chunk.strip() for chunk in chunks)
+                saved_resume = (_valid_native_id(session_id) and (has_successful_tool or has_text)
+                                and (not denied_tools or has_successful_tool)
+                                and (not bound or recovered) and save_native())
+                refusal = ("Antigravity 在收到进展后长时间没有新的正文或成功工具结果，已停止等待。"
+                           if code == "agy_idle_timeout" else "Antigravity 本轮达到执行时限。")
+                if has_tool_results or has_text:
+                    refusal += "本轮已返回的内容和工具结果已保留，请先核对已完成的操作。"
+                    if saved_resume:
+                        refusal += "已保存原生续接点，请在当前会话继续，不要重发原请求。"
+                elif has_tool_started:
+                    refusal += "工具已开始但没有返回结果，请先核对是否执行成功，不要直接重发。"
                 else:
                     refusal += "没有收到正文或工具结果，可缩小任务范围后再试。"
             else:

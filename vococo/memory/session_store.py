@@ -1266,25 +1266,16 @@ def agy_native_session(session_key: str) -> dict | None:
     return json.loads(row[0]) if row and row[0] else None
 
 
-def lock_agy_native_session(session_key: str, model: str, turn_id: int, native: dict) -> bool:
-    """首轮原生终态成功才持久化；不复活被删除或已改模型的会话。"""
+def save_agy_native_session(session_key: str, model: str, turn_id: int, native: dict,
+                            *, previous: dict | None) -> bool:
+    """只给当前分段的进行中轮次绑定原生会话；不覆盖更新的绑定。"""
     c = _conn()
     cur = c.execute(
         "UPDATE session_meta SET agy_native_session=? WHERE session_key=? AND chosen_model=? "
-        "AND agy_native_session IS NULL AND EXISTS (SELECT 1 FROM turns WHERE session_key=? AND id=?)",
-        (json.dumps(native), session_key, model, session_key, turn_id),
-    )
-    c.commit()
-    return cur.rowcount == 1
-
-
-def replace_agy_native_session(session_key: str, model: str, native: dict) -> bool:
-    """旧纯文本会话无法用 ACP 恢复时，换成同一个 Antigravity 模型的新会话 ID。"""
-    c = _conn()
-    cur = c.execute(
-        "UPDATE session_meta SET agy_native_session=? WHERE session_key=? AND chosen_model=? "
-        "AND agy_native_session IS NOT NULL",
-        (json.dumps(native), session_key, model),
+        "AND json_extract(engine_context, '$.segment') IS ? AND json(agy_native_session) IS json(?) "
+        "AND EXISTS (SELECT 1 FROM turns WHERE session_key=? AND id=? AND in_progress=1)",
+        (json.dumps(native), session_key, model, native.get("segment"),
+         json.dumps(previous) if previous is not None else None, session_key, turn_id),
     )
     c.commit()
     return cur.rowcount == 1
