@@ -63,7 +63,7 @@ async def test_web_native_binding_only_after_success(isolated, monkeypatch):
 
     async def stream_turn(cwd, timeout, model, prompt, *, effort=None, session_id=None, **kwargs):
         called.append((str(cwd), model, effort, session_id))
-        assert (timeout, kwargs["max_timeout"], kwargs["progress_window"]) == (360, 720, 90)
+        assert (timeout, kwargs["max_timeout"], kwargs["progress_window"]) == (360, 720, 180)
         assert prompt.startswith("本会话由 vococo 网页代理")
         assert "不发送的规则" not in prompt
         if prompt.endswith("skip unsafe style"):
@@ -393,7 +393,8 @@ async def test_legacy_variant_migrates_to_family_and_keeps_effort(isolated, monk
 
 
 @pytest.mark.anyio
-async def test_legacy_session_falls_back_to_new_acp_session(isolated, monkeypatch):
+@pytest.mark.parametrize("denied", [False, True])
+async def test_legacy_session_falls_back_to_new_acp_session(isolated, monkeypatch, denied):
     workspace = isolated / "workspaces" / "agy-handoff" / "session-legacy"
     workspace.mkdir(parents=True)
     key = "session:legacy"
@@ -411,11 +412,14 @@ async def test_legacy_session_falls_back_to_new_acp_session(isolated, monkeypatc
     def prepare_into(path, key, *, draft_owner=None):
         return {"agent_id": "general", "global_agent_id": "general"}
 
-    async def stream_turn(cwd, timeout, model, prompt, *, session_id=None, **kwargs):
+    async def stream_turn(cwd, timeout, model, prompt, *, session_id=None, approve=None, **kwargs):
         if session_id:
             raise agy_acp.AcpError("agy_session_mismatch")
         yield "session", new_id
-        yield "delta", "继续了"
+        if denied:
+            assert await approve("mcp_unknown_vococo_create_task", {}) == "deny"
+        else:
+            yield "delta", "继续了"
         yield "done", None
 
     async def no_mcp():
@@ -425,12 +429,17 @@ async def test_legacy_session_falls_back_to_new_acp_session(isolated, monkeypatc
     monkeypatch.setattr(agy_trial, "_vococo_mcp_bundle", no_mcp)
     monkeypatch.setattr(agy_handoff, "prepare_into", prepare_into)
     monkeypatch.setattr(agy_acp, "stream_turn", stream_turn)
-    events = [event async for event in agy_trial.stream_native(key, 1, HIGH, "继续")]
+    turn = session_store.start_turn(key, "继续")
+    events = [event async for event in agy_trial.stream_native(key, turn, HIGH, "继续")]
     done = events[-1]
-    assert "继续了" in done.reply.text and "原 Antigravity 会话无法恢复" in done.reply.text
     assert not done.reply.is_error
     lock = session_store.agy_native_session(key)
-    assert lock["id"] == new_id and lock["acp"] is True
+    if denied:
+        assert "已拒绝" in done.reply.text and "已新建" not in done.reply.text
+        assert lock["id"] == NATIVE_ID and not lock.get("acp")
+    else:
+        assert "继续了" in done.reply.text and "原 Antigravity 会话无法恢复" in done.reply.text
+        assert lock["id"] == new_id and lock["acp"] is True
 
 
 @pytest.mark.anyio
@@ -579,6 +588,96 @@ async def test_denied_write_tool_without_model_text_returns_receipt_and_does_not
     assert not done.reply.is_error
     assert "已拒绝" in done.reply.text
     assert session_store.agy_native_session(key) is None
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("progress", ["tool", "text", "failed", "started", "no-id", "denied", "policy-denied"])
+async def test_native_timeout_only_resumes_partial_progress(isolated, monkeypatch, progress):
+    workspace = isolated / "workspaces" / "agy-handoff" / "session-partial"
+    workspace.mkdir(parents=True)
+    key = "session:partial"
+    session_store.bind_session(key, agent_id="general")
+    session_store.set_chosen_model(key, HIGH, handoff="fresh")
+    calls = []
+
+    async def spec():
+        return native_spec_for((HIGH,))
+
+    def prepare(*_, **__):
+        return {"workspace": str(workspace), "agent_id": "general", "global_agent_id": "general"}
+
+    async def bundle():
+        return {"server": {"name": "vococo-local"}, "read": {},
+                "write": {"mcp_vococo-local_vococo_create_task": "vococo_create_task"}}
+
+    async def deny(*_):
+        return "deny", "未执行"
+
+    async def stream_turn(cwd, timeout, model, prompt, *, session_id=None, approve=None, **kwargs):
+        calls.append((session_id, prompt))
+        if progress != "no-id":
+            yield "session", NATIVE_ID
+        if session_id:
+            yield "delta", "接着处理"
+            yield "done", None
+            return
+        if progress in ("text", "no-id", "denied", "policy-denied"):
+            if progress == "denied":
+                assert await approve("mcp_vococo-local_vococo_create_task", {"rawInput": {}}) == "deny"
+            if progress == "policy-denied":
+                assert await approve("mcp_unknown_vococo_create_task", {}) == "deny"
+            yield "delta", "部分正文"
+        else:
+            yield "tool", {"phase": "start", "id": "t", "name": "read_file"}
+            if progress != "started":
+                yield "tool", {"phase": "end", "id": "t", "name": "read_file",
+                               "status": "failed" if progress == "failed" else "completed"}
+        raise agy_acp.AcpError("agy_idle_timeout")
+
+    monkeypatch.setattr(agy_trial, "native_spec", spec)
+    monkeypatch.setattr(agy_trial, "_vococo_mcp_bundle", bundle)
+    monkeypatch.setattr(agy_trial, "_approve_vococo_tool", deny)
+    monkeypatch.setattr(agy_handoff, "prepare", prepare)
+    monkeypatch.setattr(agy_handoff, "prepare_into", prepare)
+    monkeypatch.setattr(agy_acp, "stream_turn", stream_turn)
+    turn = session_store.start_turn(key, "原请求")
+    events = [event async for event in agy_trial.stream_native(key, turn, HIGH, "原请求")]
+    first = events[-1].reply
+    assert first.is_error and "长时间没有" in first.error
+    assert len(calls) == 1
+    bound = session_store.agy_native_session(key)
+    if progress not in ("tool", "text"):
+        assert bound is None and "已保存原生续接点" not in first.error
+        if progress == "started":
+            assert "不要直接重发" in first.error
+        return
+    assert bound["id"] == NATIVE_ID and bound["segment"] == session_store.engine_context(key)["segment"]
+    assert "已保存原生续接点" in first.error
+    session_store.finish_turn(turn, first.text, session_key=key, failed=True)
+    next_turn = session_store.start_turn(key, "继续")
+    events = [event async for event in agy_trial.stream_native(key, next_turn, HIGH, "继续")]
+    assert not events[-1].reply.is_error
+    assert len(calls) == 2 and calls[-1][0] == NATIVE_ID and calls[-1][1].endswith("继续")
+    assert "原请求" not in calls[-1][1]
+
+
+def test_native_binding_does_not_replace_changed_segment_binding_or_deleted_turn(isolated):
+    key = "session:stale"
+    session_store.set_chosen_model(key, HIGH, handoff="fresh")
+    old_segment = session_store.engine_context(key)["segment"]
+    turn = session_store.start_turn(key, "原请求")
+    old = {"id": NATIVE_ID, "segment": old_segment}
+    assert session_store.save_agy_native_session(key, HIGH, turn, old, previous=None)
+    session_store.set_chosen_model(key, HIGH, handoff="fresh")
+    new = {"id": NATIVE_ID, "segment": session_store.engine_context(key)["segment"]}
+    assert not session_store.save_agy_native_session(key, HIGH, turn, old, previous=old)
+    next_turn = session_store.start_turn(key, "新请求")
+    assert not session_store.save_agy_native_session(key, HIGH, next_turn, new, previous=None)
+    assert session_store.agy_native_session(key) == old
+    assert session_store.cancel_turn(next_turn, session_key=key)
+    assert not session_store.save_agy_native_session(key, HIGH, next_turn, new, previous=old)
+    next_turn = session_store.start_turn(key, "再试")
+    assert session_store.save_agy_native_session(key, HIGH, next_turn, new, previous=old)
 
 
 def test_new_catalog_collapses_effort_and_hides_gpt_and_old_models():

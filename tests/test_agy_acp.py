@@ -31,17 +31,17 @@ async def collect(events):
     return [item async for item in events]
 
 
-def permission(req_id, name):
+def permission(req_id, name, sid='s'):
     return {'jsonrpc': '2.0', 'id': req_id, 'method': 'session/request_permission', 'params': {
-        'sessionId': 's', 'toolCall': {'toolCallId': 't', 'name': name},
+        'sessionId': sid, 'toolCall': {'toolCallId': 't', 'name': name},
         'options': [{'optionId': 'a', 'name': '允许一次', 'kind': 'allow_once'},
                     {'optionId': 'r', 'name': '拒绝', 'kind': 'reject_once'}],
     }}
 
 
-def update(text):
+def update(text, sid='s'):
     return {'jsonrpc': '2.0', 'method': 'session/update', 'params': {
-        'sessionId': 's', 'update': {'sessionUpdate': 'agent_message_chunk',
+        'sessionId': sid, 'update': {'sessionUpdate': 'agent_message_chunk',
                                      'content': {'type': 'text', 'text': text}},
     }}
 
@@ -78,12 +78,50 @@ async def test_permission_allows_only_exact_context_tools():
     ])
     client = agy_acp._Client(proc, {'mcp_vococo-context-abc_read_skill'})
     assert await agy_acp._result(client.request('initialize', {})) == {}
-    events = await collect(client.request('session/prompt', {}))
+    events = await collect(client.request('session/prompt', {'sessionId': 's'}))
     assert ('delta', '你好') in events
     replies = [json.loads(line) for line in proc.stdin.data.decode().splitlines()]
     outcomes = [reply['result']['outcome'] for reply in replies if 'result' in reply and 'id' in reply
                 and reply['id'] == 0]
     assert outcomes == [{'outcome': 'selected', 'optionId': 'a'}]
+
+
+@pytest.mark.anyio
+async def test_prompt_ignores_foreign_session_updates_and_permissions():
+    foreign_tool = {'method': 'session/update', 'params': {'sessionId': 'other', 'update': {
+        'sessionUpdate': 'tool_call', 'toolCallId': 'tool-1', 'status': 'completed', 'name': 'Read',
+    }}}
+    proc = Proc([update('外部正文', 'other'), foreign_tool, permission(0, 'write_file', 'other'),
+                 {'id': 1, 'result': {'stopReason': 'end_turn'}}])
+
+    async def approve(*_):
+        pytest.fail('不得审批其他会话的工具')
+
+    client = agy_acp._Client(proc, set(), approve=approve)
+    async with asyncio.timeout(10) as deadline:
+        events = await collect(agy_acp._stream_prompt(client, 's', '验证', deadline, deadline.when() + 10, 20))
+    assert not events and not client.trace.extended and not client.trace.tool_results
+    assert requests(proc)[1]['result'] == {'outcome': {'outcome': 'cancelled'}}
+
+
+@pytest.mark.anyio
+async def test_buffered_finish_cannot_bypass_deadline(monkeypatch):
+    proc = Proc([{'id': 1, 'result': {'stopReason': 'end_turn'}}])
+    client = agy_acp._Client(proc, set())
+    loop = asyncio.get_running_loop()
+    now = loop.time()
+    monkeypatch.setattr(loop, 'time', lambda: now)
+
+    async def read():
+        nonlocal now
+        now += 11
+        return {'id': 1, 'result': {'stopReason': 'end_turn'}}
+
+    monkeypatch.setattr(client, '_read', read)
+    async with asyncio.timeout(10) as deadline:
+        with pytest.raises(agy_acp.AcpError, match='agy_timeout'):
+            await collect(agy_acp._stream_prompt(client, 's', '验证', deadline, deadline.when(), 0))
+    assert not client.trace.finish_received
 
 
 def test_settings_open_native_tools_but_keep_task_approval():
@@ -106,7 +144,7 @@ async def test_forbidden_permission_stops_the_turn():
     client = agy_acp._Client(proc, {'mcp_vococo-context-abc_read_skill'})
     assert await agy_acp._result(client.request('initialize', {})) == {}
     with pytest.raises(agy_acp.AcpError, match='agy_unexpected_tool'):
-        await collect(client.request('session/prompt', {}))
+        await collect(client.request('session/prompt', {'sessionId': 's'}))
     replies = [json.loads(line) for line in proc.stdin.data.decode().splitlines()]
     denied = [reply['result']['outcome'] for reply in replies if 'result' in reply and 'id' in reply
               and reply['id'] == 0]
@@ -128,7 +166,7 @@ async def test_tool_updates_stream_start_and_end():
     ])
     client = agy_acp._Client(proc, set())
     assert await agy_acp._result(client.request('initialize', {})) == {}
-    events = await collect(client.request('session/prompt', {}))
+    events = await collect(client.request('session/prompt', {'sessionId': 's'}))
     tools = [payload for kind, payload in events if kind == 'tool']
     assert tools[0]['phase'] == 'start' and tools[0]['input']['CommandLine'] == 'echo hi'
     assert tools[1]['phase'] == 'end' and tools[1]['exit_code'] == 0 and 'hi' in tools[1]['output']
@@ -210,7 +248,7 @@ async def test_stream_turn_creates_session_and_streams_reply(tmp_path, monkeypat
         {'jsonrpc': '2.0', 'id': 3, 'result': {}},
         {'jsonrpc': '2.0', 'method': 'session/update', 'params': {'sessionId': sid, 'update': {
             'sessionUpdate': 'agent_thought_chunk', 'content': {'type': 'text', 'text': '先看目录'}}}},
-        update('新回复'),
+        update('新回复', sid),
         {'jsonrpc': '2.0', 'method': 'session/update', 'params': {'sessionId': sid, 'update': {
             'sessionUpdate': 'tool_call', 'toolCallId': 't1', 'name': 'run_command',
             'status': 'in_progress', 'rawInput': {'CommandLine': 'echo hi'}}}},
@@ -290,7 +328,7 @@ async def test_extra_mcp_write_tool_uses_approval_callback(tmp_path, monkeypatch
         {'jsonrpc': '2.0', 'id': 1, 'result': {}},
         {'jsonrpc': '2.0', 'id': 2, 'result': {'sessionId': sid}},
         {'jsonrpc': '2.0', 'id': 3, 'result': {}},
-        permission(0, 'mcp_vococo-local_vococo_create_task'),
+        permission(0, 'mcp_vococo-local_vococo_create_task', sid),
         {'jsonrpc': '2.0', 'id': 4, 'result': {'stopReason': 'end_turn'}},
     ])
     seen = []
@@ -331,8 +369,8 @@ async def test_denied_write_tool_does_not_abort_turn(tmp_path, monkeypatch):
         {'jsonrpc': '2.0', 'id': 1, 'result': {}},
         {'jsonrpc': '2.0', 'id': 2, 'result': {'sessionId': sid}},
         {'jsonrpc': '2.0', 'id': 3, 'result': {}},
-        permission(0, 'mcp_vococo-local_vococo_create_task'),
-        update('已取消派发'),
+        permission(0, 'mcp_vococo-local_vococo_create_task', sid),
+        update('已取消派发', sid),
         {'jsonrpc': '2.0', 'id': 4, 'result': {'stopReason': 'end_turn'}},
     ])
 
@@ -374,7 +412,7 @@ async def test_model_and_effort_use_config_options(tmp_path, monkeypatch):
         {'jsonrpc': '2.0', 'id': 2, 'result': {'sessionId': sid, 'configOptions': config}},
         {'jsonrpc': '2.0', 'id': 3, 'result': {'configOptions': config}},
         {'jsonrpc': '2.0', 'id': 4, 'result': {'configOptions': config}},
-        update('好的'),
+        update('好的', sid),
         {'jsonrpc': '2.0', 'id': 5, 'result': {'stopReason': 'end_turn'}},
     ])
 
@@ -560,7 +598,7 @@ async def test_progress_extension_rolls_but_stays_below_hard_cap():
 @pytest.mark.anyio
 @pytest.mark.parametrize('kind, status, extends', [
     ('agent_message_chunk', '', True), ('agent_thought_chunk', '', False),
-    ('tool_call', 'completed', True), ('tool_call', 'in_progress', False),
+    ('tool_call', 'completed', True), ('tool_call', 'in_progress', False), ('tool_call', 'failed', False),
 ])
 async def test_only_text_and_tool_results_extend_prompt(kind, status, extends):
     proc = Proc([
@@ -576,6 +614,44 @@ async def test_only_text_and_tool_results_extend_prompt(kind, status, extends):
         await collect(agy_acp._stream_prompt(client, 's', '合成验证', deadline, initial + 30, 20))
         assert (deadline.when() > initial) is extends
     assert client.trace.extended is extends
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize('extended, at_cap, error', [
+    (False, False, 'agy_timeout'), (True, False, 'agy_idle_timeout'), (True, True, 'agy_timeout'),
+])
+async def test_prompt_deadline_classifies_timeout_and_reclaims_process(tmp_path, monkeypatch, extended, at_cap, error):
+    proc = object()
+    reclaimed = []
+
+    async def spawn(*_):
+        return proc
+
+    async def terminate(process):
+        reclaimed.append(process)
+
+    async def open_session(*_, **__):
+        return 's', {}
+
+    async def apply_model(*_):
+        pass
+
+    async def prompt(client, sid, text, deadline, hard_end, window, **_):
+        client.trace.extended = extended
+        deadline.reschedule(hard_end if at_cap else asyncio.get_running_loop().time())
+        await asyncio.sleep(1)
+        yield 'delta', '不应返回'
+
+    monkeypatch.setattr(agy_acp, '_mcp_servers', lambda _: [])
+    monkeypatch.setattr(agy_acp, '_open_session', open_session)
+    monkeypatch.setattr(agy_acp, '_apply_model', apply_model)
+    monkeypatch.setattr(agy_acp, '_stream_prompt', prompt)
+    monkeypatch.setattr(agy_acp.agy_trial, 'spawn_cli', spawn)
+    monkeypatch.setattr(agy_acp.agy_trial, 'terminate', terminate)
+    with pytest.raises(agy_acp.AcpError) as raised:
+        await collect(agy_acp.stream_turn(tmp_path, 0.5, 'new', '合成验证', max_timeout=0.51))
+    assert raised.value.code == error
+    assert reclaimed == [proc]
 
 
 def test_mcp_servers_requires_explicit_stdio_command(tmp_path):

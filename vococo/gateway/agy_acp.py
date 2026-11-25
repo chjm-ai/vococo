@@ -48,12 +48,12 @@ class _TurnTrace:
         self.stage_times[self.stage] = round(now - self.stage_started, 3)
         self.stage, self.stage_started = stage, now
 
-    def progress(self, kind):
-        self.last_progress = monotonic()
-        if kind == 'tool':
-            self.tool_results += 1
-        elif self.first_text is None:
-            self.first_text = round(self.last_progress - self.started, 3)
+    def progress(self, *, text, tool_ended, tool_succeeded):
+        self.tool_results += int(tool_ended)
+        if text or tool_succeeded:
+            self.last_progress = monotonic()
+            if text and self.first_text is None:
+                self.first_text = round(self.last_progress - self.started, 3)
 
     def summary(self):
         now = monotonic()
@@ -252,32 +252,44 @@ class _Client:
             raise AcpError('agy_protocol_error')
         return result or {}
 
-    async def request(self, method, params, *, replay=False):
+    async def request(self, method, params, *, replay=False, check_deadline=None):
         """回放只取请求结果，不重发历史正文和工具。"""
         stage = params['configId'] if method == 'session/set_config_option' else method
         self.trace.enter(stage)
         self.seq += 1
         request_id = self.seq
+        if check_deadline:
+            check_deadline()
         await self._send({'jsonrpc': '2.0', 'id': request_id, 'method': method, 'params': params})
         tool_state: tuple[set[str], set[str]] = (set(), set())
         notified = None
         setting_model = method == 'session/set_model' or stage == 'model'
+        prompt_session = params.get('sessionId') if method == 'session/prompt' else None
         while True:
             message = await self._read()
+            if check_deadline:
+                check_deadline()
             inbound = message.get('method')
             if inbound == 'session/update':
                 options = _notified_options(message, params.get('sessionId')) if setting_model else None
                 if options is not None:
                     notified = options
-                elif not replay:
-                    if method == 'session/prompt':
-                        incoming = message.get('params') or {}
-                        usage = _context_usage(incoming.get('update'))
-                        if usage is not None and incoming.get('sessionId') == params['sessionId']:
-                            yield 'context_usage', usage
+                elif prompt_session and not replay:
+                    incoming = message.get('params')
+                    if not isinstance(incoming, dict) or incoming.get('sessionId') != prompt_session:
+                        continue
+                    usage = _context_usage(incoming.get('update'))
+                    if usage is not None:
+                        yield 'context_usage', usage
                     for event in _visible_updates(message, tool_state):
                         yield event
             elif inbound == 'session/request_permission':
+                incoming = message.get('params')
+                if not prompt_session or not isinstance(incoming, dict) or incoming.get('sessionId') != prompt_session:
+                    if 'id' in message:
+                        await self._send({'jsonrpc': '2.0', 'id': message['id'],
+                                          'result': {'outcome': {'outcome': 'cancelled'}}})
+                    continue
                 await self._permission(message)
             elif 'method' not in message:
                 result = self._response(message, request_id, method)
@@ -480,20 +492,35 @@ def _check_finish(result):
         raise AcpError('agy_finish_invalid')
 
 
+def _deadline_code(deadline, hard_end, trace):
+    return 'agy_idle_timeout' if trace.extended and deadline.when() < hard_end else 'agy_timeout'
+
+
 async def _stream_prompt(client, session_id, prompt, deadline, hard_end, progress_window, *, image_blocks=()):
     trace = client.trace
     params = {'sessionId': session_id, 'prompt': [{'type': 'text', 'text': prompt}, *image_blocks]}
+
+    def check_deadline():
+        # 已缓冲的消息不一定让出事件循环；不能只靠 asyncio 的取消回调。
+        if asyncio.get_running_loop().time() >= deadline.when():
+            raise AcpError(_deadline_code(deadline, hard_end, trace))
+
     try:
-        async with aclosing(client.request('session/prompt', params)) as events:
+        async with aclosing(client.request('session/prompt', params, check_deadline=check_deadline)) as events:
             async for kind, payload in events:
+                check_deadline()
                 if kind == 'result':
                     trace.finish_received = True
                     _check_finish(payload)
                     continue
-                if (kind == 'delta' and payload.strip()) or (kind == 'tool' and payload['phase'] == 'end'):
-                    trace.progress(kind)
-                    if _extend_for_progress(deadline, asyncio.get_running_loop().time(), hard_end, progress_window):
-                        trace.extended = True
+                text = kind == 'delta' and bool(payload.strip())
+                ended = kind == 'tool' and payload['phase'] == 'end'
+                succeeded = ended and payload.get('status') == 'completed' and payload.get('exit_code') in (None, 0)
+                if text or ended:
+                    trace.progress(text=text, tool_ended=ended, tool_succeeded=succeeded)
+                if text or succeeded:
+                    now = asyncio.get_running_loop().time()
+                    trace.extended |= _extend_for_progress(deadline, now, hard_end, progress_window)
                 yield kind, payload
     except AcpError as exc:
         if exc.code == 'agy_unavailable':
@@ -548,6 +575,8 @@ async def stream_turn(workspace, timeout, model, prompt, *, effort=None, session
         raise
     except (OSError, ValueError, AttributeError, TypeError) as exc:
         outcome = _turn_failure_code(exc, deadline)
+        if outcome == 'agy_timeout':
+            outcome = _deadline_code(deadline, hard_end, trace)
         raise AcpError(outcome) from exc
     finally:
         try:
