@@ -21,7 +21,7 @@ from .repository_locks import lease, session_digest
 
 logger = logging.getLogger(__name__)
 _DAY = 86400
-_ARCHIVE_GRACE = 7 * _DAY
+_ORPHAN_REVIEW_GRACE = 7 * _DAY
 PREVIEW_REASON = "初步检查通过，仍需复核进程和文件，暂不回收"
 
 
@@ -103,8 +103,8 @@ def _archive_reason(path: Path, state: tuple[str, float | None] | None) -> str:
     owner = agents.agent_for_session(key)
     if not owner or owner["id"] != path.parent.parent.name:
         return "会话与副本归属不匹配，仅列清单"
-    if archived_at is None or not math.isfinite(archived_at) or time.time() - archived_at < _ARCHIVE_GRACE:
-        return "归档七天观察期未满"
+    if archived_at is None or not math.isfinite(archived_at) or time.time() - archived_at < development_cleanup.ARCHIVE_GRACE:
+        return "归档五天观察期未满"
     if path.name.startswith(".initializing-") or (path / ".git").is_dir():
         return "初始化残留或旧式完整克隆，仅列清单"
     sessions = [{"key": key}]
@@ -144,12 +144,14 @@ def _eligible(path: Path, states: dict) -> bool:
             handle.write(str(time.time()))
     except FileExistsError:
         pass
-    return time.time() - float(marker.read_text()) >= _ARCHIVE_GRACE
+    return time.time() - float(marker.read_text()) >= _ORPHAN_REVIEW_GRACE
 
 
 def _collect_path(path: Path, *, closing: bool = False, preview: bool = False,
                   locked_owner: str | None = None) -> dict:
     result = {"path": str(path), "removed": False, "reason": ""}
+    if (closing or preview) and path.name.startswith(".initializing-"):
+        return dict(result, inventory_only=True, reason="初始化残留，仅列清单")
     try:
         owner = path.parent.parent.name
         lock = nullcontext() if owner == locked_owner else lease(owner, path.parent.name, exclusive=True)
@@ -169,8 +171,10 @@ def _collect_path(path: Path, *, closing: bool = False, preview: bool = False,
                     _finish_expired_collection(binding, state, result)
                 else:
                     result["reason"] = _preserve_reason(binding)
-                    if not result["reason"]:
-                        _finish_collection(binding, states, result, preview=closing or preview)
+                    if closing or preview:
+                        _finish_preview(binding, result)
+                    elif not result["reason"]:
+                        _finish_collection(binding, states, result)
     except BlockingIOError:
         result["reason"] = "正在执行或初始化"
     except Exception as exc:
@@ -179,11 +183,16 @@ def _collect_path(path: Path, *, closing: bool = False, preview: bool = False,
     return result
 
 
-def _finish_collection(binding: repositories.RepositoryCopy, states: dict, result: dict, *, preview: bool) -> None:
+def _finish_preview(binding: repositories.RepositoryCopy, result: dict) -> None:
+    if (binding.checkout / ".git").is_dir():
+        result["inventory_only"] = True
+        result["reason"] = "；".join(filter(None, (result["reason"], "旧式完整克隆，仅列清单")))
+    elif not result["reason"]:
+        result["reason"] = PREVIEW_REASON
+
+
+def _finish_collection(binding: repositories.RepositoryCopy, states: dict, result: dict) -> None:
     path = binding.checkout
-    if preview:
-        result["reason"] = "旧式完整克隆，仅列清单" if (path / ".git").is_dir() else PREVIEW_REASON
-        return
     with session_store._db.read_connection():
         result["reason"] = _archive_reason(path, states.get(path.parent.name))
     if not result["reason"]:

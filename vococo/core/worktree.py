@@ -22,6 +22,7 @@ from ..memory import session_store
 from .execution import policy_for_session
 
 _GIT_TIMEOUT_SEC = 8
+ARCHIVE_EXPIRY_NOTICE = "归档满十天后，确认归属且未被占用的副本会直接删除，不备份，未提交内容也会丢失。"
 
 
 def _wt_base(root: str) -> Path:
@@ -298,7 +299,7 @@ async def _ensure_worktree_impl(session_key: str, root: str, phash: str, slug: s
 async def recycle_empty_worktree(session_key: str) -> bool:
     """归档只触发业务副本检查；开发工作树统一交每日安全巡检。
 
-    归档不代表目录没有忽略文件或没有进程使用，不能绕过七天观察期与执行租约。
+    归档不代表目录没有忽略文件或没有进程使用，不能绕过五天观察期与执行租约。
     归档请求不删除目录；标准工作树交每日巡检按归档时间复核。
     """
     from . import repository_cleanup
@@ -339,10 +340,14 @@ async def preview_session_cleanup(session_key: str, *, locked_owner: str | None 
     """收尾只预览，删除聊天不代表授权删除代码和本地配置。"""
     from . import repository_cleanup
 
-    policy = "归档满七天回收可重建副本；满三十天后，确认归属且未被占用的副本会直接删除，不备份"
+    policy = f"归档满五天回收可重建副本；{ARCHIVE_EXPIRY_NOTICE}"
     results = await repository_cleanup.collect_session(session_key, preview=True, locked_owner=locked_owner)
     if archived:
         for row in results:
+            if row.get("inventory_only"):
+                continue
+            # 业务副本表面干净也不能保证没有本地配置，启动到期计时前仍须提醒。
+            row["need_confirm"] = True
             row["reason"] = policy if row["reason"] == repository_cleanup.PREVIEW_REASON else f"{row['reason']}；{policy}"
     path = session_store.get_worktree(session_key)
     if path:

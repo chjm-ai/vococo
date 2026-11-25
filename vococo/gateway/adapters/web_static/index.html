@@ -1632,8 +1632,7 @@ $("#convDocsBtn").onclick=e=>{ e.stopPropagation(); toggleConvDocuments(); };
 document.addEventListener("click", e=>{ const b=$("#ctxBox"); if(b && !b.contains(e.target)) $("#convDocsPop").hidden=true; });
 
 // ── 归档 + 会话筛选 ──────────────────────────────────────────────────────
-// 归档时 worktree 有未提交改动/未合并提交 → 后端先不归档,弹「确定归档/放弃」确认框,
-// 用户点头(force)才真归档——归档不丢内容,但会触发收尾回收信号,所以先问一句。
+// 归档后巡检可能无备份回收；有业务仓库副本或开发工作树有改动时先请用户确认。
 async function toggleArchive(conv){
   const c=findConv(conv); if(!c) return;
   const next=!c.archived;
@@ -1651,14 +1650,16 @@ async function toggleArchive(conv){
       body:JSON.stringify({conv,archived:next})});
     const j=await r.json().catch(()=>({}));
     if(j && j.need_confirm){
-      // 有未提交改动/未合并提交:回滚乐观更新,弹确认框,点头才真归档
+      // 可能丢失本地内容时先回滚乐观更新，点头才真归档。
       c.archived=!next; renderConvs();
-      const choice=await archConfirmChoice(dirtyBits(j.dirty||{}));
+      const choice=await archConfirmChoice(j.dirty ? dirtyBits(j.dirty) : "");
       if(choice!=="archive") return;   // 放弃:保持未归档
       const r2=await api("/conv/archive",{method:"POST",headers:{"Content-Type":"application/json"},
         body:JSON.stringify({conv,archived:true,force:true})});
       const j2=await r2.json().catch(()=>({}));
-      if(j2 && Array.isArray(j2.cleanup) && j2.cleanup.length){
+      if(!r2.ok || !j2.ok) return;
+      c.archived=true; renderConvs();
+      if(Array.isArray(j2.cleanup) && j2.cleanup.length){
         alert("已归档，以下副本暂时保留：\n"+j2.cleanup.map(x=>x.path+"："+x.reason).join("\n"));
       }else if(j2 && j2.warning){
         alert("已归档，代码尚有 "+dirtyBits(j2.dirty||{})+"，副本暂时保留。");
@@ -1685,11 +1686,12 @@ function dirtyBits(d){
   if(d.commits) bits.push(d.commits+" 个未合并提交");
   return bits.join("、")||"未提交内容";
 }
-// 归档确认(worktree 有未提交改动时):确定归档 / 放弃。返回 "archive" | "cancel"。
+// 归档确认：确定归档 / 放弃。返回 "archive" | "cancel"。
 function archConfirmChoice(bits){
   return new Promise(res=>{
     const m=$("#archModal");
-    $("#archDirty").textContent="此会话还有"+bits+"。归档满 30 天后，符合条件的副本会直接删除，不做备份，未提交内容也会丢失。确定归档吗？";
+    const prefix=bits ? "此会话还有"+bits+"。" : "此会话有仓库副本将进入自动回收巡检。";
+    $("#archDirty").textContent=prefix+"归档满 10 天后，符合条件的副本会直接删除，不做备份，未提交内容也会丢失。确定归档吗？";
     const done=v=>{ m.hidden=true; m.onclick=null; res(v); };
     $("#archGo").onclick=()=>done("archive");
     $("#archCancel").onclick=()=>done("cancel");

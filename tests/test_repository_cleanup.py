@@ -60,22 +60,70 @@ async def test_archive_previews_rebuildable_copy(isolated, legacy):
     _, key, binding = await setup(isolated, legacy=legacy)
     session_store.set_conv_archived(key, True)
     results = await worktree.preview_session_cleanup(key)
-    assert ("旧式完整克隆" if legacy else "归档满七天") in results[0]["reason"]
+    reason = results[0]["reason"]
+    if legacy:
+        assert "旧式完整克隆，仅列清单" in reason and "满十天后" not in reason
+    else:
+        assert "归档满五天" in reason and "满十天后" in reason
     assert binding.checkout.exists()
     assert (binding.source / "file.txt").read_text() == "原文\n"
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize("kind", ["clean", "dirty", "metadata", "legacy"])
+async def test_business_archive_warns_before_starting_cleanup_timer(isolated, monkeypatch, kind):
+    from aiohttp import web
+    from aiohttp.test_utils import TestClient, TestServer
+    from vococo.gateway.adapters.web import WebAdapter
+
+    _, key, binding = await setup(isolated, legacy=kind == "legacy")
+    file = binding.checkout / ".env.local"
+    if kind == "metadata":
+        file = Path(git(binding.checkout, "rev-parse", "--absolute-git-dir")) / "config.worktree"
+    if kind != "clean":
+        file.write_text("[test]\nlocal = true\n")
+    monkeypatch.setattr(config, "WEB_AUTH_TOKEN", "")
+    app = web.Application()
+    app.router.add_post("/conv/archive", WebAdapter()._handle_conv_archive)
+    query = "SELECT archived_at FROM session_archive_times WHERE session_key=?"
+
+    async with TestClient(TestServer(app)) as client:
+        response = await client.post("/conv/archive", json={"conv": key})
+        data = await response.json()
+        if kind != "legacy":
+            assert data["need_confirm"] and "归档满十天后" in data["msg"]
+            assert session_store._conn().execute(query, (key,)).fetchone() is None
+            response = await client.post("/conv/archive", json={"conv": key, "force": True})
+            data = await response.json()
+            assert data["warning"] and "不备份" in data["msg"]
+        assert data["ok"] and not data["cleanup"][0]["removed"]
+    assert session_store._conn().execute(query, (key,)).fetchone() is not None
+    assert binding.checkout.is_dir()
+    if kind != "clean":
+        assert file.read_text() == "[test]\nlocal = true\n"
+
+
+@pytest.mark.anyio
+async def test_uninitialized_copy_is_inventory_only_in_archive_preview(isolated):
+    _, key, binding = await setup(isolated)
+    pending = binding.checkout.parent / ".initializing-unfinished"
+    pending.mkdir()
+    result = next(row for row in await worktree.preview_session_cleanup(key) if row["path"] == str(pending))
+    assert result["reason"] == "初始化残留，仅列清单" and not result.get("need_confirm")
+    assert pending.exists()
+
+
+@pytest.mark.anyio
 @pytest.mark.parametrize("legacy", [False, True])
-async def test_sweep_reclaims_only_managed_archived_checkout_after_seven_days(isolated, monkeypatch, legacy):
+async def test_sweep_reclaims_only_managed_archived_checkout_at_five_days(isolated, monkeypatch, legacy):
     _, key, binding = await setup(isolated, legacy=legacy)
     clock = [time.time()]
     monkeypatch.setattr(cleanup.time, "time", lambda: clock[0])
     revision = git(binding.checkout, "rev-parse", "HEAD")
     session_store.append(key, "测试问题", "测试回复")
     session_store.set_conv_archived(key, True)
-    clock[0] += cleanup._ARCHIVE_GRACE - 1
-    assert (await cleanup.sweep())[0]["reason"] == "归档七天观察期未满"
+    clock[0] += 5 * 86400 - 1
+    assert (await cleanup.sweep())[0]["reason"] == "归档五天观察期未满"
     clock[0] += 1
     with (binding.checkout / "file.txt").open():
         assert not (await cleanup.sweep())[0]["removed"]
@@ -96,7 +144,7 @@ async def test_business_checkout_with_review_lease_is_not_removed(isolated, monk
     _, key, binding = await setup(isolated)
     session_store.set_conv_archived(key, True)
     now = time.time()
-    monkeypatch.setattr(cleanup.time, "time", lambda: now + cleanup._ARCHIVE_GRACE)
+    monkeypatch.setattr(cleanup.time, "time", lambda: now + 5 * 86400)
     async with locks.checkout_lease(binding.checkout):
         assert (await cleanup.sweep())[0]["reason"] == "正在执行或初始化"
     assert binding.checkout.exists()
@@ -108,11 +156,11 @@ async def test_unarchiving_restarts_business_copy_observation(isolated, monkeypa
     clock = [time.time()]
     monkeypatch.setattr(cleanup.time, "time", lambda: clock[0])
     session_store.set_conv_archived(key, True)
-    clock[0] += cleanup._ARCHIVE_GRACE
+    clock[0] += 5 * 86400
     session_store.set_conv_archived(key, False)
     assert await cleanup.sweep() == []
     session_store.set_conv_archived(key, True)
-    assert (await cleanup.sweep())[0]["reason"] == "归档七天观察期未满"
+    assert (await cleanup.sweep())[0]["reason"] == "归档五天观察期未满"
     assert binding.checkout.exists()
 
 
@@ -154,7 +202,7 @@ async def test_preserves_work_in_archived_session(isolated, content):
 
 
 @pytest.mark.anyio
-async def test_thirty_day_recovery_discards_working_files_without_archive(isolated, monkeypatch):
+async def test_ten_day_recovery_discards_working_files_without_archive(isolated, monkeypatch):
     _, key, binding = await setup(isolated)
     path = binding.checkout
     git(path, "commit", "--allow-empty", "-m", "会话分支提交")
@@ -167,13 +215,13 @@ async def test_thirty_day_recovery_discards_working_files_without_archive(isolat
     clock = [time.time()]
     monkeypatch.setattr(cleanup.time, "time", lambda: clock[0])
     session_store.set_conv_archived(key, True)
-    clock[0] += 30 * 86400 - 1
+    clock[0] += 10 * 86400 - 1
     assert not (await cleanup.sweep())[0]["removed"]
     clock[0] += 1
     preview, = await worktree.preview_session_cleanup(key)
     assert "不备份" in preview["reason"] and path.exists()
     row, = await cleanup.sweep()
-    assert row["removed"] and "直接回收" in row["reason"], row
+    assert row["removed"] and "归档满十天" in row["reason"], row
     assert not path.exists()
     assert not (config.DATA_DIR / "repository-backups").exists()
     assert session_store.load_recent(key, 1)[0].user == "测试问题"
@@ -183,14 +231,14 @@ async def test_thirty_day_recovery_discards_working_files_without_archive(isolat
 
 @pytest.mark.anyio
 @pytest.mark.parametrize("protected", ["open", "restored", "nested_repo", "bare_repo", "legacy", "git_lock", "merge"])
-async def test_thirty_day_recovery_keeps_unsafe_or_reactivated_checkout(isolated, monkeypatch, protected):
+async def test_ten_day_recovery_keeps_unsafe_or_reactivated_checkout(isolated, monkeypatch, protected):
     _, key, binding = await setup(isolated, legacy=protected == "legacy")
     path = binding.checkout
     draft = path / "draft"
     draft.write_text("暂不删除")
     session_store.set_conv_archived(key, True)
     now = time.time()
-    monkeypatch.setattr(cleanup.time, "time", lambda: now + 30 * 86400)
+    monkeypatch.setattr(cleanup.time, "time", lambda: now + 10 * 86400)
     if protected == "restored":
         session_store.set_conv_archived(key, False)
         assert await cleanup.sweep() == []
@@ -226,9 +274,12 @@ async def test_deleted_session_has_grace_period(isolated, monkeypatch):
     old = time.time() - 8 * 86400
     os.utime(binding.checkout, (old, old))
     session_store.delete_session(key)
+    clock = [time.time()]
+    monkeypatch.setattr(cleanup.time, "time", lambda: clock[0])
     assert await cleanup.sweep() == []
-    observed = time.time()
-    monkeypatch.setattr(cleanup.time, "time", lambda: observed + 8 * 86400)
+    clock[0] += 7 * 86400 - 1
+    assert await cleanup.sweep() == []
+    clock[0] += 1
     results = await cleanup.sweep()
     assert not results[0]["removed"]
     assert "找不到已归档会话" in results[0]["reason"]
@@ -243,7 +294,7 @@ async def test_active_lease_blocks_cleanup_then_releases(isolated):
         results = await cleanup.sweep()
         assert results[0]["reason"] == "正在执行或初始化"
         assert binding.checkout.exists()
-    assert (await cleanup.sweep())[0]["reason"] == "归档七天观察期未满"
+    assert (await cleanup.sweep())[0]["reason"] == "归档五天观察期未满"
 
 
 @pytest.mark.anyio
@@ -272,7 +323,7 @@ async def test_stream_lease_covers_execution_and_is_released_on_close(isolated):
     assert await anext(events) == "开始"
     assert not (await cleanup.sweep())[0]["removed"]
     await events.aclose()
-    assert (await cleanup.sweep())[0]["reason"] == "归档七天观察期未满"
+    assert (await cleanup.sweep())[0]["reason"] == "归档五天观察期未满"
 
 
 @pytest.mark.anyio

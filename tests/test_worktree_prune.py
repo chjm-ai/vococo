@@ -225,16 +225,31 @@ async def test_recycle_keeps_worktree_with_commits(isolated, monkeypatch, tmp_pa
 
 
 @pytest.mark.anyio
-async def test_recycle_keeps_worktree_dirty(isolated, monkeypatch, tmp_path):
-    """归档场景:有未提交改动 → 不动,内容不能丢。"""
-    repo, wt_base, phash, _ = _setup(isolated, monkeypatch, tmp_path)
-    wt = _add_worktree(repo, wt_base, phash, "s1", "vococo/s1")
-    (wt / "README.md").write_text("改了没提交")
-    session_store.set_worktree(f"web:p{phash}:s1", str(wt))
+async def test_archive_warns_about_expiry_and_keeps_dirty_worktree_now(isolated, monkeypatch, tmp_path):
+    from aiohttp import web
+    from aiohttp.test_utils import TestClient, TestServer
+    from vococo.gateway.adapters.web import WebAdapter
 
-    recycled = await worktree.recycle_empty_worktree(f"web:p{phash}:s1")
-    assert recycled is False
-    assert wt.is_dir()
+    repo, wt_base, phash, config = _setup(isolated, monkeypatch, tmp_path)
+    wt = _add_worktree(repo, wt_base, phash, "s1", "vococo/s1")
+    file = wt / "README.md"
+    file.write_text("改了没提交")
+    conv = f"p{phash}:s1"
+    session_store.set_worktree(f"web:{conv}", str(wt))
+    monkeypatch.setattr(config, "WEB_AUTH_TOKEN", "")
+    app = web.Application()
+    app.router.add_post("/conv/archive", WebAdapter()._handle_conv_archive)
+
+    async with TestClient(TestServer(app)) as client:
+        first = await client.post("/conv/archive", json={"conv": conv})
+        warning = await first.json()
+        assert warning["need_confirm"] and "归档满十天后" in warning["msg"]
+        confirmed = await client.post("/conv/archive", json={"conv": conv, "force": True})
+        result = await confirmed.json()
+        assert result["ok"] and result["warning"]
+        assert "不备份，未提交内容也会丢失" in result["msg"]
+        assert not result["cleanup"][0]["removed"]
+    assert file.read_text() == "改了没提交"
 
 
 @pytest.mark.anyio
