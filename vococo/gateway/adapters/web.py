@@ -3208,25 +3208,25 @@ class WebAdapter:
                 session_store.set_conv_archived(session_key, False)
             return web.json_response({"ok": True})
         # 归档只收起会话，开发副本统一交每日安全巡检，不绕过观察期和租约。
-        # 有独立提交/未提交改动时先让用户确认，保留成果并提示未回收原因。
         from ...core import worktree  # 懒加载
 
         dirty = await worktree.worktree_dirty_summary(session_key)
-        if dirty and not force:
-            return web.json_response({
-                "ok": False, "need_confirm": True, "dirty": dirty,
-                "msg": "该会话的代码有未提交改动或未合并提交,归档后 worktree 暂不回收",
-            })
+        cleanup = await worktree.preview_session_cleanup(session_key)
         if self.session_closing(session_key):
             return web.json_response({"ok": False, "error": "会话已删除或正在删除"}, status=409)
+        warning = bool(dirty) or any(row.get("need_confirm") for row in cleanup)
+        if warning and not force:
+            prefix = "该会话有未提交改动或未合并提交。" if dirty else "该会话有仓库副本将进入自动回收巡检。"
+            return web.json_response({
+                "ok": False, "need_confirm": True, "dirty": dirty,
+                "msg": f"{prefix}{worktree.ARCHIVE_EXPIRY_NOTICE}",
+            })
         session_store.set_conv_archived(session_key, True)
-        cleanup = await worktree.preview_session_cleanup(session_key)
         logging.getLogger(__name__).info("会话归档，副本预览：%s %s", session_key, cleanup)
-        if dirty:
+        if warning:
             return web.json_response({
                 "ok": True, "warning": True, "dirty": dirty, "cleanup": cleanup,
-                "msg": "该会话有未提交改动或未合并提交,worktree 暂未回收(内容不能丢),"
-                       "合并后由每日安全巡检判断是否回收",
+                "msg": f"已归档，副本暂未回收。{worktree.ARCHIVE_EXPIRY_NOTICE}",
             })
         return web.json_response({"ok": True, "cleanup": cleanup})
 

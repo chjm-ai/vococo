@@ -1,4 +1,4 @@
-"""开发工作树巡检：满七天回收可重建副本，满三十天按归属直接回收。"""
+"""开发工作树巡检：满五天回收可重建副本，满十天按归属直接回收。"""
 from __future__ import annotations
 
 import asyncio
@@ -21,8 +21,8 @@ from .. import config
 from ..memory import session_store
 from .repository_locks import checkout_retirement_lease, lease, session_digest
 
-_IDLE_SECONDS = 7 * 86400
-_ARCHIVE_EXPIRY = 30 * 86400
+ARCHIVE_GRACE = 5 * 86400
+_ARCHIVE_EXPIRY = 10 * 86400
 _STATE_VERSION = 1
 
 
@@ -368,15 +368,15 @@ def _inspect(root: Path, path: Path, sessions: list[dict], state: dict, now: flo
     archived_at = sessions[0]["archived_at"]
     if archived_at is None:
         return {"reason": "旧存量仅列清单" if observed["legacy"] else "会话未归档，仅列清单"}
-    if not math.isfinite(archived_at) or now - archived_at < _IDLE_SECONDS:
-        return {"reason": "归档七天观察期未满"}
+    if not math.isfinite(archived_at) or now - archived_at < ARCHIVE_GRACE:
+        return {"reason": "归档五天观察期未满"}
     from .worktree import _slug
 
     slug = _slug(sessions[0]["key"].split(":")[-1])
     if path.name != slug or branch != f"refs/heads/vococo/{slug}":
         return {"reason": "会话分支不可按原版本重建，仅列清单"}
-    if now - max(observed["idle_since"], activity, sessions[0]["activity"]) < _IDLE_SECONDS:
-        return {"reason": "七天闲置观察期未满"}
+    if now - max(observed["idle_since"], activity, sessions[0]["activity"]) < ARCHIVE_GRACE:
+        return {"reason": "五天闲置观察期未满"}
     return {"reason": "", "branch": branch}
 
 
@@ -636,7 +636,7 @@ def _finish_retirement(root, retired, check, result, measure, *, expired: bool) 
         result["reason"] = "目录仍在使用或有未结束的 Git 操作"
         return
     _git(root, "worktree", "remove", "--force", str(retired))
-    result.update(removed=True, bytes=size, reason="归档满三十天，已直接回收副本")
+    result.update(removed=True, bytes=size, reason="归档满十天，已直接回收副本")
 
 
 def _clear_bindings(path: Path, sessions: list[dict]) -> None:

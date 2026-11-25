@@ -72,7 +72,7 @@ async def observe_new(root):
     key, path = add_worktree(root)
     session_store.set_conv_archived(key, True)
     rows = await cleanup.sweep()
-    assert rows[0]["reason"] == "归档七天观察期未满"
+    assert rows[0]["reason"] == "归档五天观察期未满"
     return key, path
 
 
@@ -80,10 +80,11 @@ async def observe_new(root):
 async def test_new_worktree_requires_full_observed_idle_period(repository):
     root, clock = repository
     key, path = await observe_new(root)
-    clock[0] += 7 * 86400 - 1
+    clock[0] += 5 * 86400 - 1
     assert not (await cleanup.sweep())[0]["removed"]
     clock[0] += 1
-    assert (await cleanup.sweep())[0]["removed"]
+    row, = await cleanup.sweep()
+    assert row["removed"] and not row["reason"], row
     assert not path.exists()
     assert session_store.get_worktree(key) is None
     assert (root / "file.txt").read_text() == "原文\n"
@@ -92,7 +93,7 @@ async def test_new_worktree_requires_full_observed_idle_period(repository):
 
 @pytest.mark.anyio
 @pytest.mark.parametrize("alternate", [False, True])
-async def test_development_worktree_is_discarded_at_thirty_days(repository, alternate):
+async def test_development_worktree_is_discarded_at_ten_days(repository, alternate):
     root, clock = repository
     key, path = add_worktree(root, "test-2" if alternate else "test")
     if alternate:
@@ -102,21 +103,21 @@ async def test_development_worktree_is_discarded_at_thirty_days(repository, alte
         session_store.set_worktree(key, str(path))
     (path / "draft").write_text("可丢弃的本地成果")
     session_store.set_conv_archived(key, True)
-    clock[0] += 30 * 86400 - 1
+    clock[0] += 10 * 86400 - 1
     assert not (await cleanup.sweep())[0]["removed"]
     clock[0] += 1
     active_lease = repository_locks.session_digest(key)
     with repository_locks.lease("test-owner", active_lease):
         assert not (await cleanup.sweep())[0]["removed"]
     row, = await cleanup.sweep()
-    assert row["removed"], row
+    assert row["removed"] and "归档满十天" in row["reason"], row
     assert not path.exists() and session_store.get_worktree(key) is None
     assert (root / "file.txt").read_text() == "原文\n"
     assert git(root, "branch", "--list", f"vococo/{path.name}")
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("days", [7, 30])
+@pytest.mark.parametrize("days", [5, 10])
 async def test_cleanup_rejects_same_device_mount(repository, monkeypatch, days):
     root, clock = repository
     _, path = await observe_new(root)
@@ -128,7 +129,7 @@ async def test_cleanup_rejects_same_device_mount(repository, monkeypatch, days):
 
 @pytest.mark.anyio
 @pytest.mark.parametrize("metadata", ["draft", "resolve_undo"])
-async def test_weekly_checkout_recovery_preserves_private_git_work(repository, metadata):
+async def test_rebuildable_checkout_recovery_preserves_private_git_work(repository, metadata):
     root, clock = repository
     key, path = await observe_new(root)
     if metadata == "draft":
@@ -143,7 +144,7 @@ async def test_weekly_checkout_recovery_preserves_private_git_work(repository, m
         git(path, "add", "file.txt")
         assert git(path, "ls-files", "--resolve-undo")
     assert not git(path, "status", "--porcelain")
-    clock[0] += 7 * 86400
+    clock[0] += 5 * 86400
     row, = await cleanup.sweep()
     assert not row["removed"] and ("提交消息草稿" if metadata == "draft" else "冲突撤销记录") in row["reason"]
     assert path.exists() and session_store.get_worktree(key) == str(path)
@@ -213,7 +214,7 @@ async def test_clean_filter_does_not_make_local_bytes_rebuildable(repository):
 
 @pytest.mark.anyio
 @pytest.mark.parametrize("status", ["queued", "done"])
-@pytest.mark.parametrize("days", [8, 30])
+@pytest.mark.parametrize("days", [5, 10])
 async def test_review_task_protects_parent_checkout(repository, status, days):
     root, clock = repository
     _, path = await observe_new(root)
@@ -313,10 +314,13 @@ async def test_merged_commit_resets_observation_then_can_be_collected(repository
     _, path = await observe_new(root)
     git(path, "commit", "--allow-empty", "-m", "已合并成果")
     git(root, "merge", "--ff-only", "vococo/test")
-    clock[0] += 8 * 86400
-    assert (await cleanup.sweep())[0]["reason"] == "七天闲置观察期未满"
-    clock[0] += 7 * 86400
-    assert (await cleanup.sweep())[0]["removed"]
+    clock[0] += 4 * 86400
+    assert (await cleanup.sweep())[0]["reason"] == "归档五天观察期未满"
+    clock[0] += 86400
+    assert (await cleanup.sweep())[0]["reason"] == "五天闲置观察期未满"
+    clock[0] += 4 * 86400
+    row, = await cleanup.sweep()
+    assert row["removed"] and not row["reason"], row
 
 
 @pytest.mark.anyio
@@ -335,13 +339,15 @@ async def test_hidden_index_flags_are_never_treated_as_clean(repository, flag):
 async def test_execution_lease_blocks_then_restarts_idle_observation(repository):
     root, clock = repository
     key, path = await observe_new(root)
-    clock[0] += 8 * 86400
+    clock[0] += 4 * 86400
     with repository_locks.lease("test-owner", repository_locks.session_digest(key)):
         assert (await cleanup.sweep())[0]["reason"] == "正在执行或初始化"
-    assert (await cleanup.sweep())[0]["reason"] == "七天闲置观察期未满"
+    clock[0] += 86400
+    assert (await cleanup.sweep())[0]["reason"] == "五天闲置观察期未满"
     assert path.exists()
-    clock[0] += 7 * 86400
-    assert (await cleanup.sweep())[0]["removed"]
+    clock[0] += 4 * 86400
+    row, = await cleanup.sweep()
+    assert row["removed"] and not row["reason"], row
 
 
 @pytest.mark.anyio
@@ -358,7 +364,7 @@ async def test_task_activity_and_running_state_are_checked(repository, status):
     clock[0] += 8 * 86400
     row = (await cleanup.sweep())[0]
     assert not row["removed"]
-    assert row["reason"] == ("七天闲置观察期未满" if status == "done" else "会话或任务正在执行/排队")
+    assert row["reason"] == ("五天闲置观察期未满" if status == "done" else "会话或任务正在执行/排队")
     assert path.exists()
 
 
@@ -372,7 +378,7 @@ async def test_new_turn_restarts_idle_period(repository):
                        (key, clock[0], "新的对话", "已完成"))
     connection.commit()
     clock[0] += 2 * 86400
-    assert (await cleanup.sweep())[0]["reason"] == "七天闲置观察期未满"
+    assert (await cleanup.sweep())[0]["reason"] == "五天闲置观察期未满"
     assert path.exists()
 
 
@@ -531,7 +537,7 @@ async def test_reflog_only_activity_restarts_idle_period(repository):
     git(path, "commit", "--allow-empty", "-m", "新活动")
     git(root, "merge", "--ff-only", "vococo/test")
     git(path, "reset", "--hard", original)
-    assert (await cleanup.sweep())[0]["reason"] == "七天闲置观察期未满"
+    assert (await cleanup.sweep())[0]["reason"] == "五天闲置观察期未满"
     assert path.exists()
 
 
@@ -583,7 +589,7 @@ async def test_clean_file_restored_by_hand_restarts_idle_period(repository):
     clock[0] += 8 * 86400
     (path / "file.txt").write_text("原文\n")
     assert not git(path, "status", "--porcelain")
-    assert (await cleanup.sweep())[0]["reason"] == "七天闲置观察期未满"
+    assert (await cleanup.sweep())[0]["reason"] == "五天闲置观察期未满"
     assert path.exists()
 
 
